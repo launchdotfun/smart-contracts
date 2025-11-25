@@ -1,50 +1,8 @@
 import { FhevmType } from "@fhevm/hardhat-plugin";
 import { task } from "hardhat/config";
-import { HardhatRuntimeEnvironment, TaskArguments } from "hardhat/types";
+import type { TaskArguments } from "hardhat/types";
 
-/**
- * Helper function to get a signer by index
- */
-async function getSigner(hre: HardhatRuntimeEnvironment, index: number) {
-  const signers = await hre.ethers.getSigners();
-  if (index >= signers.length) {
-    throw new Error(`User index ${index} not found. Available users: 0-${signers.length - 1}`);
-  }
-  return signers[index];
-}
-
-/**
- * Helper function to format amounts for display
- */
-function formatAmount(amount: bigint, decimals: number): string {
-  const divisor = 10n ** BigInt(decimals);
-  const whole = amount / divisor;
-  const fraction = amount % divisor;
-  const fractionStr = fraction.toString().padStart(decimals, "0").replace(/0+$/, "");
-  return fractionStr ? `${whole}.${fractionStr}` : whole.toString();
-}
-
-/**
- * Helper function to parse amounts from user input
- */
-function parseAmount(amountStr: string, decimals: number): bigint {
-  const parts = amountStr.split(".");
-  if (parts.length > 2) {
-    throw new Error("Invalid amount format. Use format like '1.5' or '100'");
-  }
-
-  const whole = parts[0] || "0";
-  const fraction = parts[1] || "";
-
-  if (fraction.length > decimals) {
-    throw new Error(`Amount has too many decimal places. Maximum: ${decimals}`);
-  }
-
-  const wholeBigInt = BigInt(whole) * 10n ** BigInt(decimals);
-  const fractionBigInt = BigInt(fraction.padEnd(decimals, "0"));
-
-  return wholeBigInt + fractionBigInt;
-}
+import { formatAmount, getSigner, parseAmount } from "./helpers";
 
 /**
  * Deposit ETH to PixelWETH
@@ -65,35 +23,53 @@ task("task:zweth-deposit", "Deposit ETH to PixelWETH")
 
     const user = await getSigner(hre, parseInt(taskArguments.user));
     const to = taskArguments.to || user.address;
-    const amount = parseAmount(taskArguments.amount, 18);
+    const amountWei = parseAmount(taskArguments.amount, 18, hre);
 
     const zweth = await hre.ethers.getContractAt("PixelWETH", taskArguments.zweth);
+    const zwethAddress = await zweth.getAddress();
+    const rate = BigInt((await zweth.rate()).toString());
 
-    console.log(`Depositing ${formatAmount(amount, 18)} ETH...`);
+    if (amountWei <= rate) {
+      throw new Error(
+        `Deposit amount must be greater than the on-chain rate (${formatAmount(rate, 18, hre)} ETH).`,
+      );
+    }
+
+    console.log(`Depositing ${formatAmount(amountWei, 18, hre)} ETH...`);
     console.log("From:", user.address);
     console.log("To:", to);
 
     // Deposit ETH to zWETH
-    const tx = await zweth.connect(user).deposit(to, { value: amount });
+    const tx = await zweth.connect(user).deposit(to, { value: amountWei });
     await tx.wait();
 
     // Get balance after deposit
-    const balanceAfter = await zweth.balanceOf(to);
-    const clearBalanceAfter = await fhevm.userDecryptEuint(
-      FhevmType.euint64,
-      balanceAfter.toString(),
-      taskArguments.zweth,
-      user,
-    );
+    let clearBalanceAfter: bigint | null = null;
+    const balanceAfter = await zweth.confidentialBalanceOf(to);
+    if (to.toLowerCase() === user.address.toLowerCase()) {
+      clearBalanceAfter = await fhevm.userDecryptEuint(
+        FhevmType.euint64,
+        balanceAfter.toString(),
+        zwethAddress,
+        user,
+      );
+    } else {
+      console.log("Recipient differs from sender. Skipping decrypted balance output.");
+    }
+
+    const minted = amountWei / rate;
 
     console.log("✅ Deposit completed successfully!");
-    console.log("Deposited amount:", formatAmount(amount, 18));
-    console.log("Balance after:", formatAmount(clearBalanceAfter, 9));
+    console.log("Deposited amount (ETH):", formatAmount(amountWei, 18, hre));
+    console.log("Minted zWETH:", formatAmount(minted, 9, hre));
+    if (clearBalanceAfter !== null) {
+      console.log("Balance after:", formatAmount(clearBalanceAfter, 9, hre));
+    }
 
     return {
       from: user.address,
       to: to,
-      depositedAmount: amount,
+      depositedAmount: amountWei,
       newBalance: clearBalanceAfter,
     };
   });
@@ -116,21 +92,28 @@ task("task:zweth-withdraw", "Withdraw ETH from PixelWETH")
     await fhevm.initializeCLIApi();
 
     const user = await getSigner(hre, parseInt(taskArguments.user));
-    const amount = parseAmount(taskArguments.amount, 9);
+    const amountZweth = parseAmount(taskArguments.amount, 9, hre);
+    if (amountZweth <= 0n) {
+      throw new Error("Amount must be greater than zero");
+    }
 
     const zweth = await hre.ethers.getContractAt("PixelWETH", taskArguments.zweth);
+    const zwethAddress = await zweth.getAddress();
+    const rate = BigInt((await zweth.rate()).toString());
     const to = taskArguments.to || user.address;
 
-    console.log(`Withdrawing ${formatAmount(amount, 9)} zWETH...`);
+    console.log(`Withdrawing ${formatAmount(amountZweth, 9, hre)} zWETH...`);
     console.log("From:", user.address);
     console.log("To:", to);
 
     // Check if user has enough zWETH
-    const balance = await zweth.balanceOf(user.address);
-    const clearBalance = await fhevm.userDecryptEuint(FhevmType.euint64, balance.toString(), taskArguments.zweth, user);
+    const balance = await zweth.confidentialBalanceOf(user.address);
+    const clearBalance = await fhevm.userDecryptEuint(FhevmType.euint64, balance.toString(), zwethAddress, user);
 
-    if (clearBalance < amount) {
-      throw new Error(`Insufficient zWETH balance. Have: ${clearBalance}, Need: ${amount}`);
+    if (clearBalance < amountZweth) {
+      throw new Error(
+        `Insufficient zWETH balance. Have: ${formatAmount(clearBalance, 9, hre)}, Need: ${formatAmount(amountZweth, 9, hre)}`,
+      );
     }
 
     // Get ETH balance before withdrawal
@@ -138,25 +121,36 @@ task("task:zweth-withdraw", "Withdraw ETH from PixelWETH")
 
     // Create encrypted withdrawal input
     console.log("Creating encrypted withdrawal input...");
-    const encrypted = await fhevm.createEncryptedInput(taskArguments.zweth, user.address).add64(amount).encrypt();
+    const encrypted = await fhevm.createEncryptedInput(zwethAddress, user.address).add64(amountZweth).encrypt();
 
-    // Withdraw ETH
+    // Convert amount to uint64 for finalizeWithdraw
+    if (amountZweth > (1n << 64n) - 1n) {
+      throw new Error("Amount exceeds uint64 range required by withdraw");
+    }
+    const amountUint64 = Number(amountZweth);
+
+    // Withdraw ETH and finalize in one transaction
     console.log("Executing withdrawal...");
     const tx = await zweth
       .connect(user)
-      ["withdraw(address,address,bytes32,bytes)"](user.address, to, encrypted.handles[0], encrypted.inputProof);
+      [
+        "withdrawAndFinalize(address,address,bytes32,bytes,uint64)"
+      ](user.address, to, encrypted.handles[0], encrypted.inputProof, amountUint64);
     await tx.wait();
 
     // Get ETH balance after withdrawal
     const ethBalanceAfter = await hre.ethers.provider.getBalance(to);
+    const ethReceived = ethBalanceAfter - ethBalanceBefore;
 
     console.log("✅ Withdrawal completed successfully!");
-    console.log("ETH received:", formatAmount(ethBalanceAfter - ethBalanceBefore, 9));
+    console.log("zWETH burned:", formatAmount(amountZweth, 9, hre));
+    console.log("ETH received:", formatAmount(ethReceived, 18, hre));
+    console.log("Expected ETH (zWETH * rate):", formatAmount(amountZweth * rate, 18, hre));
 
     return {
       from: user.address,
       to: to,
-      withdrawnAmount: ethBalanceAfter - ethBalanceBefore,
+      withdrawnAmount: ethReceived,
     };
   });
 
@@ -179,16 +173,17 @@ task("task:zweth-balance", "Get PixelWETH balance")
 
     const user = await getSigner(hre, parseInt(taskArguments.user));
     const zweth = await hre.ethers.getContractAt("PixelWETH", taskArguments.zweth);
+    const zwethAddress = await zweth.getAddress();
 
     // Get balance
     console.log("Getting PixelWETH balance of user...");
-    const balance = await zweth.balanceOf(user.address);
-    const clearBalance = await fhevm.userDecryptEuint(FhevmType.euint64, balance.toString(), taskArguments.zweth, user);
-    console.log("Cleared balance:", formatAmount(clearBalance, 9));
+    const balance = await zweth.confidentialBalanceOf(user.address);
+    const clearBalance = await fhevm.userDecryptEuint(FhevmType.euint64, balance.toString(), zwethAddress, user);
+    console.log("Cleared balance:", formatAmount(clearBalance, 9, hre));
 
     console.log("👤 PixelWETH Balance:");
     console.log("User address:", user.address);
-    console.log("Balance:", formatAmount(clearBalance, 9));
+    console.log("Balance:", formatAmount(clearBalance, 9, hre));
 
     return {
       address: user.address,
@@ -208,12 +203,13 @@ task("task:zweth-info", "Get PixelWETH contract information")
     const zweth = await hre.ethers.getContractAt("PixelWETH", taskArguments.zweth);
 
     // Get contract info
-    const [name, symbol, decimals, rate] = await Promise.all([
+    const [name, symbol, decimals, rateRaw] = await Promise.all([
       zweth.name(),
       zweth.symbol(),
       zweth.decimals(),
       zweth.rate(),
     ]);
+    const rate = BigInt(rateRaw.toString());
 
     console.log("📊 PixelWETH Contract Information:");
     console.log("Address:", taskArguments.zweth);
@@ -221,7 +217,7 @@ task("task:zweth-info", "Get PixelWETH contract information")
     console.log("Symbol:", symbol);
     console.log("Decimals:", decimals);
     console.log("Rate:", rate.toString());
-    console.log("Rate explanation: 1 zWETH =", formatAmount(rate, 9), "ETH");
+    console.log("Rate explanation: 1 zWETH =", formatAmount(rate, 18, hre), "ETH");
 
     return {
       address: taskArguments.zweth,

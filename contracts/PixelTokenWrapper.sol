@@ -2,17 +2,17 @@
 pragma solidity ^0.8.24;
 
 import {IERC20} from "@openzeppelin/contracts/interfaces/IERC20.sol";
-import {SepoliaConfig} from "@fhevm/solidity/config/ZamaConfig.sol";
+import {ZamaEthereumConfig} from "@fhevm/solidity/config/ZamaConfig.sol";
 import {
-    ConfidentialFungibleTokenERC20Wrapper
-} from "@openzeppelin/contracts-confidential/token/extensions/ConfidentialFungibleTokenERC20Wrapper.sol";
-import {ConfidentialFungibleToken} from "@openzeppelin/contracts-confidential/token/ConfidentialFungibleToken.sol";
+    ERC7984ERC20Wrapper
+} from "@openzeppelin/contracts-confidential/contracts/token/ERC7984/extensions/ERC7984ERC20Wrapper.sol";
+import {ERC7984} from "@openzeppelin/contracts-confidential/contracts/token/ERC7984/ERC7984.sol";
 
-contract PixelTokenWrapper is SepoliaConfig, ConfidentialFungibleTokenERC20Wrapper {
+contract PixelTokenWrapper is ZamaEthereumConfig, ERC7984ERC20Wrapper {
     constructor(
         string memory name_,
         string memory symbol_,
         string memory tokenURI_,
         IERC20 underlying_
-    ) ConfidentialFungibleTokenERC20Wrapper(underlying_) ConfidentialFungibleToken(name_, symbol_, tokenURI_) {}
+    ) ERC7984ERC20Wrapper(underlying_) ERC7984(name_, symbol_, tokenURI_) {}
 }

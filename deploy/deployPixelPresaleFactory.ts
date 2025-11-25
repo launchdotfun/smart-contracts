@@ -11,10 +11,14 @@ const func: DeployFunction = async function (hre: HardhatRuntimeEnvironment) {
   const zwethAddress = zwethDeployment.address;
   console.log("Using PixelWETH address:", zwethAddress);
 
+  const tokenFactoryDeployment = await get("PixelTokenFactory");
+  const tokenFactoryAddress = tokenFactoryDeployment.address;
+  console.log("Using PixelTokenFactory address:", tokenFactoryAddress);
+
   const factory = await deploy("PixelPresaleFactory", {
     from: deployer,
     log: true,
-    args: [zwethAddress],
+    args: [zwethAddress, tokenFactoryAddress],
   });
 
   console.log(`PixelPresaleFactory deployed at:`, factory.address);

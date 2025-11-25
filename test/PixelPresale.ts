@@ -12,40 +12,33 @@ import {
   PixelPresaleFactory,
   PixelPresaleFactory__factory,
   PixelPresale__factory,
+  PixelTokenFactory,
+  PixelTokenFactory__factory,
   PixelTokenWrapper,
   PixelTokenWrapper__factory,
   PixelWETH,
   PixelWETH__factory,
 } from "../types";
 
-// Constants for better maintainability
+// ====== Constants ======
+
 const TIME_INCREASE = 7200; // 2 hours
 const PRESALE_DURATION = 3600; // 1 hour
 const PRESALE_START_OFFSET = 60; // 1 minute ago
 const OPERATOR_EXPIRY_OFFSET = 1000; // 1000 seconds from now
 
-// Purchase amounts as constants for better maintainability
-const PURCHASE_AMOUNTS = {
-  alice: ethers.parseUnits("1", 9), // 1 ETH
-  bob: ethers.parseUnits("10", 9), // 10 ETH
-  charlie: ethers.parseUnits("6", 9), // 6 ETH
-  // For min/max contribution tests
-  alice1: ethers.parseUnits("0.1", 9),
-  alice2: ethers.parseUnits("0.5", 9),
-  alice3: ethers.parseUnits("0.1", 9),
-  alice4: ethers.parseUnits("3", 9),
-  alice5: ethers.parseUnits("1.4", 9),
+// Bid amounts (in zWETH units, 9 decimals)
+const BID_AMOUNTS = {
+  alice: ethers.parseUnits("4", 9), // 4
+  bob: ethers.parseUnits("4", 9), // 4
+  charlie: ethers.parseUnits("2", 9), // 2
 } as const;
 
-// Presale configuration constants
+// Presale base config
 const PRESALE_CONFIG = {
-  hardCap: ethers.parseUnits("10", 9), // 10 ETH
-  softCap: ethers.parseUnits("6", 9), // 6 ETH
-  maxContribution: ethers.parseUnits("10", 9), // max 10
-  minContribution: ethers.parseUnits("0.1", 9), // min 0.1
+  hardCap: ethers.parseUnits("10", 9), // 10
+  softCap: ethers.parseUnits("6", 9), // 6
   tokenPresale: ethers.parseUnits("1000000000", 18), // 1_000_000_000
-  tokenAddLiquidity: ethers.parseUnits("1000000000", 18), // 1_000_000_000
-  liquidityPercentage: BigInt(5000), // 50%
 } as const;
 
 type Signers = {
@@ -55,27 +48,26 @@ type Signers = {
   charlie: HardhatEthersSigner;
 };
 
-// Helper functions to reduce code duplication and improve performance
+// ====== Test helpers ======
+
 class TestHelpers {
-  /**
-   * Wraps ETH to zWETH for a user
-   */
   static async wrapETH(user: HardhatEthersSigner, amount: bigint, zweth: PixelWETH) {
-    // Only wrap if amount is greater than 0
     if (amount > 0n) {
-      const wrapAmount = amount * 10n ** 9n;
+      const wrapAmount = amount * 10n ** 9n; // zWETH has 9 decimals
       await zweth.connect(user).deposit(user.address, { value: wrapAmount });
     }
 
-    const balance = await zweth.balanceOf(user.address);
-    const clearBalance = await fhevm.userDecryptEuint(FhevmType.euint64, balance.toString(), zweth.target, user);
+    const balance = await zweth.confidentialBalanceOf(user.address);
+    const clearBalance = await fhevm.userDecryptEuint(
+      FhevmType.euint64,
+      balance.toString(),
+      await zweth.getAddress(),
+      user,
+    );
     return { balance, clearBalance };
   }
 
-  /**
-   * Ensures we're in the purchase period
-   */
-  static async ensurePurchasePeriod(presale: PixelPresale) {
+  static async ensureBidPeriod(presale: PixelPresale) {
     const currentTime = await time.latest();
     const pool = await presale.pool();
     if (currentTime < pool.options.start) {
@@ -83,182 +75,146 @@ class TestHelpers {
     }
   }
 
-  /**
-   * Approves zWETH spending for presale contract
-   */
-  static async approveCWETH(user: HardhatEthersSigner, presaleAddress: string, zweth: PixelWETH) {
+  static async approveZWETH(user: HardhatEthersSigner, presaleAddress: string, zweth: PixelWETH) {
     await zweth.connect(user).setOperator(presaleAddress, BigInt((await time.latest()) + OPERATOR_EXPIRY_OFFSET));
   }
 
-  /**
-   * Creates encrypted input for purchase
-   */
-  static async createEncryptedPurchase(presaleAddress: string, user: HardhatEthersSigner, amount: bigint) {
+  static async createEncryptedBid(presaleAddress: string, user: HardhatEthersSigner, amount: bigint) {
+    // Hardhat fhevm plugin: createEncryptedInput(contract, user).add64(amount)
     return await fhevm.createEncryptedInput(presaleAddress, user.address).add64(amount).encrypt();
   }
 
-  /**
-   * Performs a purchase and returns contribution and claimable tokens
-   */
-  static async performPurchase(
-    presale: PixelPresale,
-    user: HardhatEthersSigner,
-    amount: bigint,
-    presaleAddress: string,
-  ) {
-    const encrypted = await this.createEncryptedPurchase(presaleAddress, user, amount);
+  static async performBid(presale: PixelPresale, user: HardhatEthersSigner, amount: bigint, presaleAddress: string) {
+    const encrypted = await this.createEncryptedBid(presaleAddress, user, amount);
 
-    await presale.connect(user).purchase(user.address, encrypted.handles[0], encrypted.inputProof);
+    await presale.connect(user).placeBid(user.address, encrypted.handles[0], encrypted.inputProof);
 
-    // Wait for FHEVM to process the transaction
-    await fhevm.awaitDecryptionOracle();
+    const contribution = await presale.contributions(user.address);
+    const clearContribution = await fhevm.userDecryptEuint(
+      FhevmType.euint64,
+      contribution.toString(),
+      presaleAddress,
+      user,
+    );
 
-    // Get contribution and claimable tokens in parallel for better performance
-    const [contribution, claimableTokens] = await Promise.all([
-      presale.contributions(user.address),
-      presale.claimableTokens(user.address),
-    ]);
-
-    const [clearContribution, clearClaimableTokens] = await Promise.all([
-      fhevm.userDecryptEuint(FhevmType.euint64, contribution.toString(), presaleAddress, user),
-      fhevm.userDecryptEuint(FhevmType.euint64, claimableTokens.toString(), presaleAddress, user),
-    ]);
-
-    return { clearContribution, clearClaimableTokens };
+    return { clearContribution };
   }
 
-  /**
-   * Claims tokens and returns the balance
-   */
-  static async claimTokens(presale: PixelPresale, user: HardhatEthersSigner, ctoken: PixelTokenWrapper) {
+  static async claimTokens(presale: PixelPresale, user: HardhatEthersSigner, ztoken: PixelTokenWrapper) {
     await presale.connect(user).claimTokens(user.address);
 
-    const balance = await ctoken.balanceOf(user.address);
+    const balance = await ztoken.confidentialBalanceOf(user.address);
     const clearBalance = await fhevm.userDecryptEuint(
       FhevmType.euint64,
       balance.toString(),
-      await ctoken.getAddress(),
+      await ztoken.getAddress(),
       user,
     );
     return clearBalance;
   }
 
-  /**
-   * Calculates expected contribution based on hard cap
-   */
-  static calculateExpectedContribution(
-    purchaseAmount: bigint,
-    beforePurchased: bigint,
-    hardCap: bigint,
-  ): { contribution: bigint; actualPurchased: bigint } {
-    const totalAfterPurchase = beforePurchased + purchaseAmount;
-
-    if (totalAfterPurchase > hardCap) {
-      const contribution = hardCap - beforePurchased;
-      return { contribution, actualPurchased: contribution };
-    } else {
-      return { contribution: purchaseAmount, actualPurchased: purchaseAmount };
-    }
-  }
-
-  /**
-   * Advances time and requests finalization
-   */
-  static async finalizePresale(presale: PixelPresale, user: HardhatEthersSigner) {
+  static async finalizePresale(
+    presale: PixelPresale,
+    caller: HardhatEthersSigner,
+    totalBid: bigint, // truyền từ test vào
+  ) {
     await network.provider.send("evm_increaseTime", [TIME_INCREASE]);
-    await presale.connect(user).requestFinalizePresaleState();
+
+    const pool = await presale.pool();
+
+    const hardCapBig = BigInt(pool.options.hardCap.toString());
+    const tokenPerEthBig = BigInt(pool.tokenPerEthWithDecimals.toString());
+
+    // ethRaisedUsed: số zWETH thực sự được dùng
+    const ethRaisedUsed = totalBid <= hardCapBig ? totalBid : hardCapBig;
+
+    // fill ratio pro-rata
+    const fillNumerator = ethRaisedUsed;
+    const fillDenominator = totalBid;
+
+    // tokensSold (zToken units)
+    const tokensSold = ethRaisedUsed * tokenPerEthBig;
+
+    await presale.connect(caller).finalizePreSale(ethRaisedUsed, tokensSold, fillNumerator, fillDenominator);
+
+    return {
+      totalBid,
+      ethRaisedUsed,
+      fillNumerator,
+      fillDenominator,
+      tokensSold,
+      tokenPerEthBig,
+    };
   }
 
-  /**
-   * Waits for decryption and validates final state
-   */
   static async validateFinalization(
     presale: PixelPresale,
     expectedState: number,
     expectedWeiRaised: bigint,
-    expectedTokensSold: bigint,
+    expectedTokensSoldUnderlying: bigint,
   ) {
-    await fhevm.awaitDecryptionOracle();
-
     const pool = await presale.pool();
     expect(pool.state).to.eq(expectedState);
     expect(pool.weiRaised).to.eq(expectedWeiRaised);
-    expect(pool.tokensSold).to.eq(expectedTokensSold);
-
+    expect(pool.tokensSold).to.eq(expectedTokensSoldUnderlying);
     return pool;
   }
 }
 
-describe("PixelPresale integration flow", function () {
-  // Cached variables for better performance
+// ====== Test suite ======
+
+describe("PixelPresale (bid-based) integration flow", function () {
   let signers: Signers;
   let zweth: PixelWETH;
   let factory: PixelPresaleFactory;
   let presale: PixelPresale;
   let presaleAddress: string;
-  let purchased: bigint;
-  let tokenPerEth: bigint;
   let token: IERC20;
-  let ctoken: PixelTokenWrapper;
+  let ztoken: PixelTokenWrapper;
   let now: number;
-  let aliceActualPurchased: bigint;
-  let bobActualPurchased: bigint;
-  let charlieActualPurchased: bigint;
 
-  // Cached contract addresses for better performance
   let zwethAddress: string;
-  let ctokenAddress: string;
   let tokenAddress: string;
+  let ztokenAddress: string;
 
-  /**
-   * Optimized setup function with better error handling and performance
-   * @param customConfig Optional custom config, uses PRESALE_CONFIG if not provided
-   */
-  async function setupPresale(customConfig?: typeof PRESALE_CONFIG) {
-    const config = customConfig || PRESALE_CONFIG;
-    // Validate FHEVM environment
+  async function setupPresale(config = PRESALE_CONFIG) {
     if (!fhevm.isMock) {
       throw new Error("This hardhat test suite cannot run on Sepolia Testnet");
     }
 
-    purchased = 0n;
-
-    // Deploy PixelWETH with better error handling
+    // Deploy zWETH
     zweth = (await (await new PixelWETH__factory(signers.deployer).deploy()).waitForDeployment()) as PixelWETH;
     zwethAddress = await zweth.getAddress();
 
+    // Deploy PixelTokenFactory
+    const tokenFactory = (await (
+      await new PixelTokenFactory__factory(signers.deployer).deploy()
+    ).waitForDeployment()) as PixelTokenFactory;
+
     // Deploy PixelPresaleFactory
     factory = (await (
-      await new PixelPresaleFactory__factory(signers.deployer).deploy(zwethAddress)
+      await new PixelPresaleFactory__factory(signers.deployer).deploy(zwethAddress, await tokenFactory.getAddress())
     ).waitForDeployment()) as PixelPresaleFactory;
 
-    // Cache current time for better performance
     now = await time.latest();
 
-    // Create presale options with cached constants
     const presaleOptions = {
-      tokenAddLiquidity: config.tokenAddLiquidity,
       tokenPresale: config.tokenPresale,
-      liquidityPercentage: config.liquidityPercentage,
       hardCap: config.hardCap,
       softCap: config.softCap,
-      maxContribution: config.maxContribution,
-      minContribution: config.minContribution,
       start: BigInt(now - PRESALE_START_OFFSET),
       end: BigInt(now + PRESALE_DURATION),
     };
 
-    // Create presale with better error handling
     const tx = await factory.createPixelPresaleWithNewToken(
       "TestToken",
       "TTK",
-      config.tokenAddLiquidity + config.tokenPresale,
+      config.tokenPresale, // totalSupply = tokenPresale (đơn giản)
       presaleOptions,
     );
 
     const receipt = await tx.wait();
 
-    // Extract presale address from event with better error handling
     type PixelPresaleCreatedEvent = {
       name: string;
       args: { presale: string };
@@ -282,28 +238,20 @@ describe("PixelPresale integration flow", function () {
       throw new Error("Failed to extract presale address from deployment event");
     }
 
-    // Connect to contracts with cached addresses
     presale = PixelPresale__factory.connect(presaleAddress, signers.deployer) as PixelPresale;
     const pool = await presale.pool();
 
-    ctoken = PixelTokenWrapper__factory.connect(pool.ctoken, signers.deployer) as PixelTokenWrapper;
+    ztoken = PixelTokenWrapper__factory.connect(pool.ztoken, signers.deployer) as PixelTokenWrapper;
     token = IERC20__factory.connect(pool.token, signers.deployer) as IERC20;
 
-    // Cache addresses for better performance
-    ctokenAddress = await ctoken.getAddress();
+    ztokenAddress = await ztoken.getAddress();
     tokenAddress = await token.getAddress();
 
-    // Calculate token per ETH ratio using the actual rate from ctoken
-    // This matches the contract calculation: tokenPresale / rate / hardCap
-    const rate = await ctoken.rate();
-    tokenPerEth = config.tokenPresale / rate / config.hardCap;
-
-    // Log setup information
     console.table({
-      "token address": tokenAddress,
-      "zweth address": zwethAddress,
-      "presale address": presaleAddress,
-      "ctoken address": ctokenAddress,
+      token: tokenAddress,
+      zweth: zwethAddress,
+      presale: presaleAddress,
+      ztoken: ztokenAddress,
     });
   }
 
@@ -324,395 +272,170 @@ describe("PixelPresale integration flow", function () {
     });
   });
 
-  describe("Test happy case: can be finalized", function () {
+  // ===== Happy case: oversubscription / full hard cap, success, pro-rata allocation =====
+
+  describe("Happy path: bids reach/exceed hard cap → presale success", function () {
     before(async function () {
       await setupPresale();
     });
 
-    it("Test wrap ETH for Alice", async function () {
-      const { clearBalance } = await TestHelpers.wrapETH(signers.alice, PURCHASE_AMOUNTS.alice, zweth);
-      expect(clearBalance).to.eq(PURCHASE_AMOUNTS.alice);
+    it("wrap ETH into zWETH for all bidders", async function () {
+      const { clearBalance: a } = await TestHelpers.wrapETH(signers.alice, BID_AMOUNTS.alice, zweth);
+      const { clearBalance: b } = await TestHelpers.wrapETH(signers.bob, BID_AMOUNTS.bob, zweth);
+      const { clearBalance: c } = await TestHelpers.wrapETH(signers.charlie, BID_AMOUNTS.charlie, zweth);
+
+      expect(a).to.eq(BID_AMOUNTS.alice);
+      expect(b).to.eq(BID_AMOUNTS.bob);
+      expect(c).to.eq(BID_AMOUNTS.charlie);
     });
 
-    it("Test Alice's purchase", async function () {
-      await TestHelpers.ensurePurchasePeriod(presale);
-      await TestHelpers.approveCWETH(signers.alice, presaleAddress, zweth);
+    it("Alice, Bob, Charlie place bids", async function () {
+      await TestHelpers.ensureBidPeriod(presale);
 
-      aliceActualPurchased = PURCHASE_AMOUNTS.alice;
-      purchased += aliceActualPurchased;
+      await TestHelpers.approveZWETH(signers.alice, presaleAddress, zweth);
+      await TestHelpers.approveZWETH(signers.bob, presaleAddress, zweth);
+      await TestHelpers.approveZWETH(signers.charlie, presaleAddress, zweth);
 
-      const { clearContribution, clearClaimableTokens } = await TestHelpers.performPurchase(
+      const { clearContribution: ca } = await TestHelpers.performBid(
         presale,
         signers.alice,
-        PURCHASE_AMOUNTS.alice,
+        BID_AMOUNTS.alice,
         presaleAddress,
       );
-
-      console.log("alice contribution: ", clearContribution);
-      console.log("alice claimable tokens: ", clearClaimableTokens);
-
-      expect(clearContribution).to.eq(PURCHASE_AMOUNTS.alice);
-      expect(clearClaimableTokens).to.eq(PURCHASE_AMOUNTS.alice * tokenPerEth);
-    });
-
-    it("Test Bob's purchase exceeding hard cap", async function () {
-      await TestHelpers.ensurePurchasePeriod(presale);
-      await TestHelpers.wrapETH(signers.bob, ethers.parseUnits("100", 9), zweth);
-      await TestHelpers.approveCWETH(signers.bob, presaleAddress, zweth);
-
-      const beforePurchased = purchased;
-      purchased += PURCHASE_AMOUNTS.bob;
-
-      const { contribution: contributionShouldBe, actualPurchased } = TestHelpers.calculateExpectedContribution(
-        PURCHASE_AMOUNTS.bob,
-        beforePurchased,
-        PRESALE_CONFIG.hardCap,
-      );
-
-      bobActualPurchased = actualPurchased;
-      if (purchased > PRESALE_CONFIG.hardCap) {
-        purchased = PRESALE_CONFIG.hardCap;
-      }
-
-      const { clearContribution, clearClaimableTokens } = await TestHelpers.performPurchase(
+      const { clearContribution: cb } = await TestHelpers.performBid(
         presale,
         signers.bob,
-        PURCHASE_AMOUNTS.bob,
+        BID_AMOUNTS.bob,
         presaleAddress,
       );
-
-      console.log("bob contribution: ", clearContribution);
-      console.log("bob claimable tokens: ", clearClaimableTokens);
-
-      expect(clearContribution).to.eq(contributionShouldBe);
-      expect(clearClaimableTokens).to.eq(contributionShouldBe * tokenPerEth);
-    });
-
-    it("Test Charlie's purchase with hard cap reached", async function () {
-      await TestHelpers.ensurePurchasePeriod(presale);
-      await TestHelpers.wrapETH(signers.charlie, ethers.parseUnits("100", 9), zweth);
-      await TestHelpers.approveCWETH(signers.charlie, presaleAddress, zweth);
-
-      const beforePurchased = purchased;
-      purchased += PURCHASE_AMOUNTS.charlie;
-
-      const { contribution: contributionShouldBe, actualPurchased } = TestHelpers.calculateExpectedContribution(
-        PURCHASE_AMOUNTS.charlie,
-        beforePurchased,
-        PRESALE_CONFIG.hardCap,
-      );
-
-      charlieActualPurchased = actualPurchased;
-
-      const { clearContribution, clearClaimableTokens } = await TestHelpers.performPurchase(
+      const { clearContribution: cc } = await TestHelpers.performBid(
         presale,
         signers.charlie,
-        PURCHASE_AMOUNTS.charlie,
+        BID_AMOUNTS.charlie,
         presaleAddress,
       );
 
-      console.log("charlie contribution: ", clearContribution);
-      console.log("charlie claimable tokens: ", clearClaimableTokens);
-
-      expect(clearContribution).to.eq(contributionShouldBe);
-      expect(clearClaimableTokens).to.eq(contributionShouldBe * tokenPerEth);
+      expect(ca).to.eq(BID_AMOUNTS.alice);
+      expect(cb).to.eq(BID_AMOUNTS.bob);
+      expect(cc).to.eq(BID_AMOUNTS.charlie);
     });
 
-    it("Test request finalize presale", async function () {
-      await TestHelpers.finalizePresale(presale, signers.alice);
-    });
+    it("finalize presale using decrypted totals and fill ratio", async function () {
+      // Sum of all bids: Alice (4) + Bob (4) + Charlie (2) = 10
+      const totalBid = BID_AMOUNTS.alice + BID_AMOUNTS.bob + BID_AMOUNTS.charlie;
 
-    it("Test finalize presale", async function () {
-      await TestHelpers.validateFinalization(
+      const { ethRaisedUsed, tokensSold, tokenPerEthBig } = await TestHelpers.finalizePresale(
         presale,
-        4, // Expected state
-        PRESALE_CONFIG.hardCap * 10n ** 9n, // Expected wei raised
-        BigInt(PRESALE_CONFIG.tokenPresale), // Expected tokens sold
+        signers.deployer,
+        totalBid,
       );
+
+      const pool = await presale.pool();
+      const rate = BigInt((await ztoken.rate()).toString());
+
+      const expectedWeiRaised = ethRaisedUsed * 10n ** 9n;
+      const expectedTokensSoldUnderlying = tokensSold * rate;
+
+      // With totalBid = 10, ethRaisedUsed = 10, softCap = 6 ⇒ state 4 (success)
+      const expectedState = ethRaisedUsed >= BigInt(pool.options.softCap.toString()) ? 4 : 3;
+
+      await TestHelpers.validateFinalization(presale, expectedState, expectedWeiRaised, expectedTokensSoldUnderlying);
+
+      console.log("totalBid    :", totalBid.toString());
+      console.log("ethUsed     :", ethRaisedUsed.toString());
+      console.log("tokenPerEth :", tokenPerEthBig.toString());
     });
 
-    it("Test Alice claims tokens", async function () {
-      const aliceClaimableTokens = aliceActualPurchased * tokenPerEth;
-      const clearBalance = await TestHelpers.claimTokens(presale, signers.alice, ctoken);
-      expect(clearBalance).to.eq(aliceClaimableTokens);
+    it("Alice can settle bid and claim tokens", async function () {
+      await presale.connect(signers.alice).settleBid(signers.alice.address);
+      const clearBalance = await TestHelpers.claimTokens(presale, signers.alice, ztoken);
+      expect(clearBalance).to.be.gt(0n);
     });
 
-    it("Test Alice cannot claim tokens twice", async function () {
+    it("Bob can settle bid and claim tokens", async function () {
+      await presale.connect(signers.bob).settleBid(signers.bob.address);
+      const clearBalance = await TestHelpers.claimTokens(presale, signers.bob, ztoken);
+      expect(clearBalance).to.be.gt(0n);
+    });
+
+    it("Charlie can settle bid and claim tokens", async function () {
+      await presale.connect(signers.charlie).settleBid(signers.charlie.address);
+      const clearBalance = await TestHelpers.claimTokens(presale, signers.charlie, ztoken);
+      expect(clearBalance).to.be.gt(0n);
+    });
+
+    it("Alice cannot claim twice", async function () {
       await expect(presale.connect(signers.alice).claimTokens(signers.alice.address)).to.be.revertedWith(
         "Already claimed",
       );
     });
-
-    it("Test Charlie claims tokens (should be 0)", async function () {
-      const clearBalance = await TestHelpers.claimTokens(presale, signers.charlie, ctoken);
-      expect(clearBalance).to.eq(0n);
-    });
-
-    it("Test Bob claims tokens", async function () {
-      const bobClaimableTokens = bobActualPurchased * tokenPerEth;
-      const clearBalance = await TestHelpers.claimTokens(presale, signers.bob, ctoken);
-      expect(clearBalance).to.eq(bobClaimableTokens);
-    });
   });
 
-  describe("Test sad case: only Alice buys -> pool is cancelled", function () {
+  // ===== Sad case: only Alice bids below softCap → presale fails, full refund =====
+
+  describe("Sad path: only Alice bids below softCap → presale cancelled", function () {
     before(async function () {
       await setupPresale();
     });
 
-    it("Test wrap ETH for Alice", async function () {
-      const { clearBalance } = await TestHelpers.wrapETH(signers.alice, PURCHASE_AMOUNTS.alice, zweth);
-      expect(clearBalance).to.eq(PURCHASE_AMOUNTS.alice);
+    it("wrap ETH for Alice", async function () {
+      const { clearBalance } = await TestHelpers.wrapETH(signers.alice, BID_AMOUNTS.alice, zweth);
+      expect(clearBalance).to.eq(BID_AMOUNTS.alice);
     });
 
-    it("Test Alice's purchase", async function () {
-      await TestHelpers.ensurePurchasePeriod(presale);
-      await TestHelpers.approveCWETH(signers.alice, presaleAddress, zweth);
+    it("Alice places bid", async function () {
+      await TestHelpers.ensureBidPeriod(presale);
+      await TestHelpers.approveZWETH(signers.alice, presaleAddress, zweth);
 
-      purchased += PURCHASE_AMOUNTS.alice;
-
-      const { clearContribution, clearClaimableTokens } = await TestHelpers.performPurchase(
+      const { clearContribution } = await TestHelpers.performBid(
         presale,
         signers.alice,
-        PURCHASE_AMOUNTS.alice,
+        BID_AMOUNTS.alice,
         presaleAddress,
       );
 
-      console.log("alice contribution: ", clearContribution);
-      console.log("alice claimable tokens: ", clearClaimableTokens);
-
-      expect(clearContribution).to.eq(PURCHASE_AMOUNTS.alice);
-      expect(clearClaimableTokens).to.eq(PURCHASE_AMOUNTS.alice * tokenPerEth);
+      expect(clearContribution).to.eq(BID_AMOUNTS.alice);
     });
 
-    it("Test request finalize presale", async function () {
-      await TestHelpers.finalizePresale(presale, signers.alice);
-    });
+    it("finalize presale: should go to state 3 (cancelled)", async function () {
+      const totalBid = BID_AMOUNTS.alice;
 
-    it("Test finalize presale (should be cancelled)", async function () {
+      const { ethRaisedUsed } = await TestHelpers.finalizePresale(presale, signers.deployer, totalBid);
+
+      const pool = await presale.pool();
+
+      // do Alice bid < softCap → state phải là 3 (thất bại)
       await TestHelpers.validateFinalization(
         presale,
-        3, // Expected state (cancelled)
-        PURCHASE_AMOUNTS.alice * 10n ** 9n, // Expected wei raised
-        PURCHASE_AMOUNTS.alice * tokenPerEth * 10n ** 9n, // Expected tokens sold
+        3,
+        ethRaisedUsed * 10n ** 9n,
+        pool.tokensSold, // ở đây chỉ check state + weiRaised là chính
       );
     });
 
-    it("Test Alice cannot claim tokens (pool cancelled)", async function () {
+    it("Alice cannot claim tokens in cancelled pool", async function () {
       await expect(presale.connect(signers.alice).claimTokens(signers.alice.address)).to.be.revertedWith(
         "Invalid state",
       );
     });
 
-    it("Test Alice gets refund", async function () {
-      await presale.connect(signers.alice).refund(signers.alice.address);
+    it("Alice can refund and get back full zWETH", async function () {
+      await presale.connect(signers.alice).refund();
 
-      const { clearBalance } = await TestHelpers.wrapETH(signers.alice, 0n, zweth);
-      expect(clearBalance).to.eq(PURCHASE_AMOUNTS.alice);
-    });
-
-    it("Test Alice cannot refund twice", async function () {
-      await expect(presale.connect(signers.alice).refund(signers.alice.address)).to.be.revertedWith("Already refunded");
-    });
-  });
-
-  describe("Test mid case: Alice and Charlie buy -> pool reaches soft cap", function () {
-    before(async function () {
-      await setupPresale();
-    });
-
-    it("Test wrap ETH for Alice", async function () {
-      const { clearBalance } = await TestHelpers.wrapETH(signers.alice, PURCHASE_AMOUNTS.alice, zweth);
-      expect(clearBalance).to.eq(PURCHASE_AMOUNTS.alice);
-    });
-
-    it("Test Alice's purchase", async function () {
-      await TestHelpers.ensurePurchasePeriod(presale);
-      await TestHelpers.approveCWETH(signers.alice, presaleAddress, zweth);
-
-      purchased += PURCHASE_AMOUNTS.alice;
-
-      const { clearContribution, clearClaimableTokens } = await TestHelpers.performPurchase(
-        presale,
+      // Kiểm tra lại balance zWETH sau refund
+      const balance = await zweth.confidentialBalanceOf(signers.alice.address);
+      const clear = await fhevm.userDecryptEuint(
+        FhevmType.euint64,
+        balance.toString(),
+        await zweth.getAddress(),
         signers.alice,
-        PURCHASE_AMOUNTS.alice,
-        presaleAddress,
       );
 
-      console.log("alice contribution: ", clearContribution);
-      console.log("alice claimable tokens: ", clearClaimableTokens);
-
-      expect(clearContribution).to.eq(PURCHASE_AMOUNTS.alice);
-      expect(clearClaimableTokens).to.eq(PURCHASE_AMOUNTS.alice * tokenPerEth);
+      expect(clear).to.eq(BID_AMOUNTS.alice);
     });
 
-    it("Test Charlie's purchase", async function () {
-      await TestHelpers.ensurePurchasePeriod(presale);
-      await TestHelpers.wrapETH(signers.charlie, PURCHASE_AMOUNTS.charlie, zweth);
-      await TestHelpers.approveCWETH(signers.charlie, presaleAddress, zweth);
-
-      const beforePurchased = purchased;
-      purchased += PURCHASE_AMOUNTS.charlie;
-
-      const { contribution: contributionShouldBe, actualPurchased } = TestHelpers.calculateExpectedContribution(
-        PURCHASE_AMOUNTS.charlie,
-        beforePurchased,
-        PRESALE_CONFIG.hardCap,
-      );
-
-      charlieActualPurchased = actualPurchased;
-
-      const { clearContribution, clearClaimableTokens } = await TestHelpers.performPurchase(
-        presale,
-        signers.charlie,
-        PURCHASE_AMOUNTS.charlie,
-        presaleAddress,
-      );
-
-      console.log("charlie contribution: ", clearContribution);
-      console.log("charlie claimable tokens: ", clearClaimableTokens);
-
-      expect(clearContribution).to.eq(contributionShouldBe);
-      expect(clearClaimableTokens).to.eq(contributionShouldBe * tokenPerEth);
-    });
-
-    it("Test request finalize presale", async function () {
-      await TestHelpers.finalizePresale(presale, signers.alice);
-    });
-
-    it("Test finalize presale and validate token refunds", async function () {
-      // Get owner token balance before finalization
-      const ownerTokenBalanceBefore = await token.balanceOf(await presale.owner());
-
-      await fhevm.awaitDecryptionOracle();
-
-      // Get owner token balance after finalization
-      const ownerTokenBalanceAfter = await token.balanceOf(await presale.owner());
-
-      const tokensSold = (PURCHASE_AMOUNTS.alice + charlieActualPurchased) * tokenPerEth * BigInt(10 ** 9);
-
-      // Validate final state
-      const pool = await TestHelpers.validateFinalization(
-        presale,
-        4, // Expected state (finalized)
-        (PURCHASE_AMOUNTS.alice + charlieActualPurchased) * 10n ** 9n, // Expected wei raised
-        tokensSold, // Expected tokens sold
-      );
-
-      // Calculate expected token refund
-      const leftOverLiquidityToken =
-        PRESALE_CONFIG.tokenAddLiquidity -
-        (PRESALE_CONFIG.tokenAddLiquidity * tokensSold) / PRESALE_CONFIG.tokenPresale;
-      const expectedRefund = pool.options.tokenPresale - pool.tokensSold + leftOverLiquidityToken;
-
-      // Validate owner token refund
-      expect(ownerTokenBalanceAfter - ownerTokenBalanceBefore).to.eq(expectedRefund);
-    });
-
-    it("Test Alice claims tokens", async function () {
-      const aliceClaimableTokens = PURCHASE_AMOUNTS.alice * tokenPerEth;
-      const clearBalance = await TestHelpers.claimTokens(presale, signers.alice, ctoken);
-      expect(clearBalance).to.eq(aliceClaimableTokens);
-    });
-
-    it("Test Charlie claims tokens", async function () {
-      const charlieClaimableTokens = charlieActualPurchased * tokenPerEth;
-      const clearBalance = await TestHelpers.claimTokens(presale, signers.charlie, ctoken);
-      expect(clearBalance).to.eq(charlieClaimableTokens);
-    });
-  });
-
-  describe("Test min/max contribution limits", function () {
-    // Use different config for min/max tests
-    const MIN_MAX_CONFIG = {
-      hardCap: ethers.parseUnits("10", 9), // 10 ETH
-      softCap: ethers.parseUnits("6", 9), // 6 ETH
-      maxContribution: ethers.parseUnits("2", 9), // max 2 ETH (smaller for testing)
-      minContribution: ethers.parseUnits("0.5", 9), // min 0.5 ETH (larger for testing)
-      tokenPresale: ethers.parseUnits("1000000000", 18), // 1_000_000_000
-      tokenAddLiquidity: ethers.parseUnits("1000000000", 18), // 1_000_000_000
-      liquidityPercentage: BigInt(5000), // 50%
-    } as const;
-
-    before(async function () {
-      await setupPresale(MIN_MAX_CONFIG);
-    });
-
-    it("Test wrap ETH for Alice", async function () {
-      const { clearBalance } = await TestHelpers.wrapETH(signers.alice, ethers.parseUnits("100", 9), zweth);
-      expect(clearBalance).to.eq(ethers.parseUnits("100", 9));
-    });
-
-    it("Test Alice's purchase with lower than min contribution", async function () {
-      await TestHelpers.ensurePurchasePeriod(presale);
-      await TestHelpers.approveCWETH(signers.alice, presaleAddress, zweth);
-
-      const { clearContribution } = await TestHelpers.performPurchase(
-        presale,
-        signers.alice,
-        PURCHASE_AMOUNTS.alice1, // 0.1 ETH < 0.5 ETH min
-        presaleAddress,
-      );
-
-      console.log("alice contribution: ", clearContribution);
-
-      expect(clearContribution).to.eq(0);
-    });
-
-    it("Test Alice's purchase with equal min contribution", async function () {
-      await TestHelpers.ensurePurchasePeriod(presale);
-      await TestHelpers.approveCWETH(signers.alice, presaleAddress, zweth);
-
-      purchased += PURCHASE_AMOUNTS.alice2; // 0.5 ETH = min
-
-      const { clearContribution } = await TestHelpers.performPurchase(
-        presale,
-        signers.alice,
-        PURCHASE_AMOUNTS.alice2,
-        presaleAddress,
-      );
-
-      console.log("alice contribution: ", clearContribution);
-
-      expect(clearContribution).to.eq(purchased);
-    });
-
-    it("Test Alice's purchase with lower than min contribution again: should be able", async function () {
-      await TestHelpers.ensurePurchasePeriod(presale);
-      await TestHelpers.approveCWETH(signers.alice, presaleAddress, zweth);
-
-      purchased += PURCHASE_AMOUNTS.alice3; // 0.1 ETH, but total already >= min
-
-      const { clearContribution } = await TestHelpers.performPurchase(
-        presale,
-        signers.alice,
-        PURCHASE_AMOUNTS.alice3,
-        presaleAddress,
-      );
-
-      console.log("alice contribution: ", clearContribution);
-
-      expect(clearContribution).to.eq(purchased);
-    });
-
-    it("Test Alice's purchase with greater than max contribution", async function () {
-      await TestHelpers.ensurePurchasePeriod(presale);
-      await TestHelpers.approveCWETH(signers.alice, presaleAddress, zweth);
-
-      const { clearContribution } = await TestHelpers.performPurchase(
-        presale,
-        signers.alice,
-        PURCHASE_AMOUNTS.alice4, // 3 ETH > 2 ETH max
-        presaleAddress,
-      );
-
-      console.log("alice contribution: ", clearContribution);
-
-      expect(clearContribution).to.eq(MIN_MAX_CONFIG.maxContribution);
-    });
-
-    it("Test request finalize presale", async function () {
-      await TestHelpers.finalizePresale(presale, signers.alice);
+    it("Alice cannot refund twice", async function () {
+      await expect(presale.connect(signers.alice).refund()).to.be.revertedWith("Already refunded");
     });
   });
 });

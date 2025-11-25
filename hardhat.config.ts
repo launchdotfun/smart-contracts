@@ -9,9 +9,9 @@ import type { HardhatUserConfig } from "hardhat/config";
 import { vars } from "hardhat/config";
 import "solidity-coverage";
 
+import "./tasks/PixelPresale";
 import "./tasks/PixelTokenWrapper";
 import "./tasks/PixelWETH";
-import "./tasks/PixelPresale";
 import "./tasks/accounts";
 
 const MNEMONIC: string = vars.get("MNEMONIC", "test test test test test test test test test test test junk");
@@ -65,7 +65,7 @@ const config: HardhatUserConfig = {
     tests: "./test",
   },
   solidity: {
-    version: "0.8.26",
+    version: "0.8.27",
     settings: {
       metadata: {
         // Not including the metadata hash

@@ -171,7 +171,7 @@ task("task:create-presale", "Create a new privacy presale")
 
     const presaleAddress = event.args.presale;
     const tokenAddress = event.args.token;
-    const ctokenAddress = event.args.ctoken;
+    const ctokenAddress = event.args.ztoken;
 
     console.log("✅ Presale created successfully!");
     console.log("Presale address:", presaleAddress);
@@ -215,7 +215,7 @@ task("task:purchase", "Purchase tokens in a presale")
     console.log("Beneficiary:", beneficiary);
 
     // Check if user has enough zWETH
-    const balance = await zweth.balanceOf(user.address);
+    const balance = await zweth.confidentialBalanceOf(user.address);
     const clearBalance = await fhevm.userDecryptEuint(FhevmType.euint64, balance.toString(), zwethAddress, user);
 
     if (clearBalance < amount) {
@@ -256,44 +256,10 @@ task("task:purchase", "Purchase tokens in a presale")
   });
 
 /**
- * Request finalize presale
- * Example: npx hardhat --network sepolia task:request-finalize --presale <ADDRESS> --user 1
- */
-task("task:request-finalize", "Request to finalize a presale")
-  .addParam("presale", "Presale contract address")
-  .addOptionalParam("user", "User index (0, 1, 2, etc.)", "0")
-  .setAction(async function (taskArguments: TaskArguments, hre) {
-    await hre.fhevm.initializeCLIApi();
-
-    // No destructuring needed for this task
-
-    console.log("Requesting presale finalization...");
-
-    const user = await getSigner(hre, parseInt(taskArguments.user));
-    const presale = await hre.ethers.getContractAt("PixelPresale", taskArguments.presale);
-
-    // Get current pool state
-    const pool = await presale.pool();
-    console.log("Current pool state:", pool.state);
-    console.log("Current time:", new Date(Math.floor(Date.now() / 1000) * 1000).toISOString());
-    console.log("Presale end time:", new Date(Number(pool.options.end) * 1000).toISOString());
-
-    // Request finalization
-    console.log("Requesting finalization...");
-    const tx = await presale.connect(user).requestFinalizePresaleState();
-    await tx.wait();
-
-    console.log("✅ Finalization requested successfully!");
-    console.log("Transaction hash:", tx.hash);
-
-    return { txHash: tx.hash };
-  });
-
-/**
- * Finalize presale (simulated for testing)
+ * Finalize presale
  * Example: npx hardhat --network sepolia task:finalize-presale --presale <ADDRESS> --user 1
  */
-task("task:finalize-presale", "Finalize a presale (simulated for testing)")
+task("task:finalize-presale", "Finalize a presale")
   .addParam("presale", "Presale contract address")
   .addParam("user", "User index (0, 1, 2, etc.)")
   .setAction(async function (taskArguments: TaskArguments, hre) {
@@ -315,7 +281,7 @@ task("task:finalize-presale", "Finalize a presale (simulated for testing)")
     console.log("Eth raised:", formatAmount(ethRaised, 9, hre), "ETH");
     console.log("Tokens sold:", formatAmount(tokensSold, 9, hre), "TTK");
 
-    const tx = await presale.connect(_user).finalizePreSale(0, ethRaised, tokensSold, [Buffer.from("0x")]);
+    const tx = await presale.connect(_user).finalizePreSale(ethRaised, tokensSold);
     await tx.wait();
 
     console.log("✅ Finalization completed successfully!");
@@ -377,12 +343,12 @@ task("task:claim-tokens", "Claim tokens after successful presale")
     await tx.wait();
 
     // Get token balance after claiming
-    const ctoken = await hre.ethers.getContractAt("PixelTokenWrapper", pool.ctoken);
-    const balance = await ctoken.balanceOf(beneficiary);
+    const ztoken = await hre.ethers.getContractAt("PixelTokenWrapper", pool.ztoken);
+    const balance = await ztoken.confidentialBalanceOf(beneficiary);
     const clearBalance = await fhevm.userDecryptEuint(
       FhevmType.euint64,
       balance.toString(),
-      await ctoken.getAddress(),
+      await ztoken.getAddress(),
       user,
     );
 
@@ -410,7 +376,6 @@ task("task:refund", "Refund contribution for failed presale")
     await fhevm.initializeCLIApi();
 
     const user = await getSigner(hre, parseInt(taskArguments.user));
-    const beneficiary = taskArguments.beneficiary || user.address;
 
     const presale = await hre.ethers.getContractAt("PixelPresale", taskArguments.presale);
 
@@ -435,10 +400,10 @@ task("task:refund", "Refund contribution for failed presale")
       user,
     );
 
-    console.log(`Refunding ${clearContribution.toString()} ETH to ${beneficiary}...`);
+    console.log(`Refunding ${clearContribution.toString()} ETH to ${user.address}...`);
 
     // Process refund
-    const tx = await presale.connect(user).refund(beneficiary);
+    const tx = await presale.connect(user).refund();
     await tx.wait();
 
     console.log("✅ Refund processed successfully!");
@@ -485,7 +450,7 @@ task("task:presale-info", "Get presale information")
     console.log("Address:", taskArguments.presale);
     console.log("State:", pool.state, `(${stateDescription})`);
     console.log("Token address:", pool.token);
-    console.log("Confidential token address:", pool.ctoken);
+    console.log("Confidential token address:", pool.ztoken);
     console.log("zWETH address:", pool.zweth);
     console.log("Wei raised:", formatAmount(pool.weiRaised, 9, hre));
     console.log("Tokens sold:", formatAmount(pool.tokensSold, 18, hre));
@@ -496,8 +461,6 @@ task("task:presale-info", "Get presale information")
     console.log("Hard cap:", formatAmount(pool.options.hardCap, 9, hre));
     console.log("Soft cap:", formatAmount(pool.options.softCap, 9, hre));
     console.log("Token presale:", formatAmount(pool.options.tokenPresale, 18, hre));
-    console.log("Token add liquidity:", formatAmount(pool.options.tokenAddLiquidity, 18, hre));
-    console.log("Liquidity percentage:", Number(pool.options.liquidityPercentage) / 100, "%");
     console.log("Start time:", new Date(Number(pool.options.start) * 1000).toISOString());
     console.log("End time:", new Date(Number(pool.options.end) * 1000).toISOString());
 

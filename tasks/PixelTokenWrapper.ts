@@ -1,129 +1,128 @@
 import { FhevmType } from "@fhevm/hardhat-plugin";
 import { task } from "hardhat/config";
-import { HardhatRuntimeEnvironment, TaskArguments } from "hardhat/types";
+import type { HardhatRuntimeEnvironment, TaskArguments } from "hardhat/types";
 
-/**
- * Helper function to get a signer by index
- */
-async function getSigner(hre: HardhatRuntimeEnvironment, index: number) {
-  const signers = await hre.ethers.getSigners();
-  if (index >= signers.length) {
-    throw new Error(`User index ${index} not found. Available users: 0-${signers.length - 1}`);
+import { formatAmount, getSigner, parseAmount } from "./helpers";
+
+const ERC20_METADATA_ABI = ["function decimals() view returns (uint8)"];
+
+async function readTokenDecimals(
+  hre: HardhatRuntimeEnvironment,
+  tokenAddress: string,
+  fallback: number,
+): Promise<number> {
+  try {
+    const contract = new hre.ethers.Contract(tokenAddress, ERC20_METADATA_ABI, hre.ethers.provider);
+    const value = await contract.decimals();
+    return typeof value === "number" ? value : Number(value);
+  } catch {
+    return fallback;
   }
-  return signers[index];
-}
-
-/**
- * Helper function to format amounts for display
- */
-function formatAmount(amount: bigint, decimals: number): string {
-  const divisor = 10n ** BigInt(decimals);
-  const whole = amount / divisor;
-  const fraction = amount % divisor;
-  const fractionStr = fraction.toString().padStart(decimals, "0").replace(/0+$/, "");
-  return fractionStr ? `${whole}.${fractionStr}` : whole.toString();
-}
-
-/**
- * Helper function to parse amounts from user input
- */
-function parseAmount(amountStr: string, decimals: number): bigint {
-  const parts = amountStr.split(".");
-  if (parts.length > 2) {
-    throw new Error("Invalid amount format. Use format like '1.5' or '100'");
-  }
-
-  const whole = parts[0] || "0";
-  const fraction = parts[1] || "";
-
-  if (fraction.length > decimals) {
-    throw new Error(`Amount has too many decimal places. Maximum: ${decimals}`);
-  }
-
-  const wholeBigInt = BigInt(whole) * 10n ** BigInt(decimals);
-  const fractionBigInt = BigInt(fraction.padEnd(decimals, "0"));
-
-  return wholeBigInt + fractionBigInt;
 }
 
 /**
  * Wrap underlying ERC20 tokens into confidential tokens
- * Example: npx hardhat --network sepolia task:ctoken-wrap --amount 100 --user 1 --ctoken 0x... --to 0x...
+ * Example: npx hardhat --network sepolia task:ztoken-wrap --amount 100 --user 1 --ztoken 0x... --to 0x...
  */
-task("task:ctoken-wrap", "Wrap underlying ERC20 tokens into confidential tokens")
+task("task:ztoken-wrap", "Wrap underlying ERC20 tokens into confidential tokens")
   .addParam("amount", "Amount of underlying tokens to wrap")
   .addParam("user", "User index (0, 1, 2, etc.)")
-  .addParam("ctoken", "PixelTokenWrapper contract address")
+  .addParam("ztoken", "PixelTokenWrapper contract address")
   .addOptionalParam("to", "Recipient address for confidential tokens (defaults to user)")
   .setAction(async function (taskArguments: TaskArguments, hre) {
+    const { fhevm } = hre;
+
     console.log("Wrapping underlying tokens into confidential tokens...");
+
+    await fhevm.initializeCLIApi();
 
     const user = await getSigner(hre, parseInt(taskArguments.user));
     const to = taskArguments.to || user.address;
-    const amount = parseAmount(taskArguments.amount, 18); // Assuming 18 decimals for underlying token
+    const ztoken = await hre.ethers.getContractAt("PixelTokenWrapper", taskArguments.ztoken);
+    const ztokenAddress = await ztoken.getAddress();
 
-    const ctoken = await hre.ethers.getContractAt("PixelTokenWrapper", taskArguments.ctoken);
-
-    // Get underlying token address and contract
-    const underlyingAddress = await ctoken.underlying();
+    const underlyingAddress = await ztoken.underlying();
     const underlying = await hre.ethers.getContractAt("IERC20", underlyingAddress);
+    const [underlyingDecimals, wrapperDecimals, rateRaw] = await Promise.all([
+      readTokenDecimals(hre, underlyingAddress, 18),
+      ztoken.decimals(),
+      ztoken.rate(),
+    ]);
+    const rate = BigInt(rateRaw.toString());
+    const decimalsNumber = Number(wrapperDecimals);
 
-    // Get rate for conversion
-    const rate = await ctoken.rate();
-    const decimals = await ctoken.decimals();
+    const amount = parseAmount(taskArguments.amount, underlyingDecimals, hre);
+    if (amount <= 0n) {
+      throw new Error("Amount must be greater than zero");
+    }
 
-    console.log(`Wrapping ${formatAmount(amount, 18)} underlying tokens...`);
+    console.log(`Wrapping ${formatAmount(amount, underlyingDecimals, hre)} underlying tokens...`);
     console.log("From:", user.address);
     console.log("To:", to);
-    console.log("Rate:", rate.toString());
-    console.log("Expected confidential tokens:", formatAmount(amount / rate, Number(decimals)));
+    console.log("Rate (underlying per confidential):", rate.toString());
+    console.log("Wrapper decimals:", decimalsNumber);
+
+    const expectedConfidential = amount / rate;
+    console.log(
+      "Expected confidential tokens:",
+      formatAmount(expectedConfidential, decimalsNumber, hre),
+    );
 
     // Check if user has enough underlying tokens
     const underlyingBalance = await underlying.balanceOf(user.address);
     if (underlyingBalance < amount) {
       throw new Error(
-        `Insufficient underlying token balance. Have: ${formatAmount(underlyingBalance, 18)}, Need: ${formatAmount(amount, 18)}`,
+        `Insufficient underlying token balance. Have: ${formatAmount(underlyingBalance, underlyingDecimals, hre)}, Need: ${formatAmount(amount, underlyingDecimals, hre)}`,
       );
     }
 
     // Check allowance
-    const allowance = await underlying.allowance(user.address, taskArguments.ctoken);
+    const allowance = await underlying.allowance(user.address, taskArguments.ztoken);
     if (allowance < amount) {
       console.log("Approving underlying tokens for wrapper contract...");
-      const approveTx = await underlying.connect(user).approve(taskArguments.ctoken, amount);
+      const approveTx = await underlying.connect(user).approve(taskArguments.ztoken, amount);
       await approveTx.wait();
       console.log("✅ Approval completed");
     }
 
     // Wrap tokens
     console.log("Executing wrap...");
-    const tx = await ctoken.connect(user).wrap(to, amount);
+    const tx = await ztoken.connect(user).wrap(to, amount);
     await tx.wait();
 
-    // Get confidential token balance after wrap
-    const balanceAfter = await ctoken.balanceOf(to);
+    let clearBalanceAfter: bigint | null = null;
+    if (to.toLowerCase() === user.address.toLowerCase()) {
+      const balanceAfter = await ztoken.confidentialBalanceOf(to);
+      clearBalanceAfter = await fhevm.userDecryptEuint(FhevmType.euint64, balanceAfter.toString(), ztokenAddress, user);
+    } else {
+      console.log("Recipient differs from sender. Skipping decrypted balance output.");
+    }
 
     console.log("✅ Wrap completed successfully!");
-    console.log("Wrapped amount:", formatAmount(amount, 18));
-    console.log("Confidential tokens received:", formatAmount(BigInt(balanceAfter), Number(decimals)));
+    console.log("Wrapped amount:", formatAmount(amount, underlyingDecimals, hre));
+    console.log("Confidential tokens minted:", formatAmount(expectedConfidential, decimalsNumber, hre));
+    if (clearBalanceAfter !== null) {
+      console.log("Recipient confidential balance:", formatAmount(clearBalanceAfter, decimalsNumber, hre));
+    }
 
     return {
       from: user.address,
       to: to,
       wrappedAmount: amount,
-      confidentialTokensReceived: balanceAfter,
+      confidentialTokensReceived: expectedConfidential,
       rate: rate,
+      newBalance: clearBalanceAfter,
     };
   });
 
 /**
  * Unwrap confidential tokens back to underlying ERC20 tokens
- * Example: npx hardhat --network sepolia task:ctoken-unwrap --amount 10 --user 1 --ctoken 0x... --to 0x...
+ * Example: npx hardhat --network sepolia task:ztoken-unwrap --amount 10 --user 1 --ztoken 0x... --to 0x...
  */
-task("task:ctoken-unwrap", "Unwrap confidential tokens back to underlying ERC20 tokens")
+task("task:ztoken-unwrap", "Unwrap confidential tokens back to underlying ERC20 tokens")
   .addParam("amount", "Amount of confidential tokens to unwrap")
   .addParam("user", "User index (0, 1, 2, etc.)")
-  .addParam("ctoken", "PixelTokenWrapper contract address")
+  .addParam("ztoken", "PixelTokenWrapper contract address")
   .addOptionalParam("to", "Recipient address for underlying tokens (defaults to user)")
   .setAction(async function (taskArguments: TaskArguments, hre) {
     const { fhevm } = hre;
@@ -135,36 +134,41 @@ task("task:ctoken-unwrap", "Unwrap confidential tokens back to underlying ERC20 
 
     const user = await getSigner(hre, parseInt(taskArguments.user));
     const to = taskArguments.to || user.address;
-    const amount = parseAmount(taskArguments.amount, 9); // Assuming 9 decimals for confidential tokens
+    const ztoken = await hre.ethers.getContractAt("PixelTokenWrapper", taskArguments.ztoken);
+    const ztokenAddress = await ztoken.getAddress();
+    const [wrapperDecimals, rateRaw, underlyingAddress] = await Promise.all([
+      ztoken.decimals(),
+      ztoken.rate(),
+      ztoken.underlying(),
+    ]);
+    const rate = BigInt(rateRaw.toString());
+    const decimalsNumber = Number(wrapperDecimals);
+    const amount = parseAmount(taskArguments.amount, decimalsNumber, hre);
+    if (amount <= 0n) {
+      throw new Error("Amount must be greater than zero");
+    }
 
-    const ctoken = await hre.ethers.getContractAt("PixelTokenWrapper", taskArguments.ctoken);
-
-    // Get underlying token address and contract
-    const underlyingAddress = await ctoken.underlying();
     const underlying = await hre.ethers.getContractAt("IERC20", underlyingAddress);
+    const underlyingDecimals = await readTokenDecimals(hre, underlyingAddress, 18);
 
-    // Get rate for conversion
-    const rate = await ctoken.rate();
-    const decimals = await ctoken.decimals();
-
-    console.log(`Unwrapping ${formatAmount(amount, Number(decimals))} confidential tokens...`);
+    console.log(`Unwrapping ${formatAmount(amount, decimalsNumber, hre)} confidential tokens...`);
     console.log("From:", user.address);
     console.log("To:", to);
     console.log("Rate:", rate.toString());
-    console.log("Expected underlying tokens:", formatAmount(amount * rate, 18));
+    console.log("Expected underlying tokens:", formatAmount(amount * rate, underlyingDecimals, hre));
 
     // Check if user has enough confidential tokens
-    const balance = await ctoken.balanceOf(user.address);
+    const balance = await ztoken.confidentialBalanceOf(user.address);
     const clearBalance = await fhevm.userDecryptEuint(
       FhevmType.euint64,
       balance.toString(),
-      taskArguments.ctoken,
+      ztokenAddress,
       user,
     );
 
     if (clearBalance < amount) {
       throw new Error(
-        `Insufficient confidential token balance. Have: ${formatAmount(clearBalance, Number(decimals))}, Need: ${formatAmount(amount, Number(decimals))}`,
+        `Insufficient confidential token balance. Have: ${formatAmount(clearBalance, decimalsNumber, hre)}, Need: ${formatAmount(amount, decimalsNumber, hre)}`,
       );
     }
 
@@ -173,25 +177,27 @@ task("task:ctoken-unwrap", "Unwrap confidential tokens back to underlying ERC20 
 
     // Create encrypted unwrap input
     console.log("Creating encrypted unwrap input...");
-    const encrypted = await fhevm.createEncryptedInput(taskArguments.ctoken, user.address).add64(amount).encrypt();
+    const encrypted = await fhevm.createEncryptedInput(ztokenAddress, user.address).add64(amount).encrypt();
 
     // Unwrap tokens
     console.log("Executing unwrap...");
-    const tx = await ctoken
+    const tx = await ztoken
       .connect(user)
       ["unwrap(address,address,bytes32,bytes)"](user.address, to, encrypted.handles[0], encrypted.inputProof);
     await tx.wait();
 
     // Get underlying token balance after unwrap
     const underlyingBalanceAfter = await underlying.balanceOf(to);
+    const receivedUnderlying = underlyingBalanceAfter - underlyingBalanceBefore;
 
     console.log("✅ Unwrap completed successfully!");
-    console.log("Underlying tokens received:", formatAmount(underlyingBalanceAfter - underlyingBalanceBefore, 18));
+    console.log("Confidential tokens burned:", formatAmount(amount, decimalsNumber, hre));
+    console.log("Underlying tokens received:", formatAmount(receivedUnderlying, underlyingDecimals, hre));
 
     return {
       from: user.address,
       to: to,
-      unwrappedAmount: underlyingBalanceAfter - underlyingBalanceBefore,
+      unwrappedAmount: receivedUnderlying,
       confidentialTokensBurned: amount,
       rate: rate,
     };
@@ -199,11 +205,11 @@ task("task:ctoken-unwrap", "Unwrap confidential tokens back to underlying ERC20 
 
 /**
  * Get confidential token balance
- * Example: npx hardhat --network sepolia task:ctoken-balance --user 1 --ctoken 0x...
+ * Example: npx hardhat --network sepolia task:ztoken-balance --user 1 --ztoken 0x...
  */
-task("task:ctoken-balance", "Get confidential token balance")
+task("task:ztoken-balance", "Get confidential token balance")
   .addParam("user", "User index (0, 1, 2, etc.)")
-  .addParam("ctoken", "PixelTokenWrapper contract address")
+  .addParam("ztoken", "PixelTokenWrapper contract address")
   .setAction(async function (taskArguments: TaskArguments, hre) {
     const { fhevm } = hre;
 
@@ -213,33 +219,36 @@ task("task:ctoken-balance", "Get confidential token balance")
     await fhevm.initializeCLIApi();
 
     const user = await getSigner(hre, parseInt(taskArguments.user));
-    const ctoken = await hre.ethers.getContractAt("PixelTokenWrapper", taskArguments.ctoken);
+    const ztoken = await hre.ethers.getContractAt("PixelTokenWrapper", taskArguments.ztoken);
+    const ztokenAddress = await ztoken.getAddress();
 
     // Get balance
     console.log("Getting confidential token balance of user...");
-    const balance = await ctoken.balanceOf(user.address);
+    const balance = await ztoken.confidentialBalanceOf(user.address);
     const clearBalance = await fhevm.userDecryptEuint(
       FhevmType.euint64,
       balance.toString(),
-      taskArguments.ctoken,
+      ztokenAddress,
       user,
     );
 
     // Get contract info for display
-    const [name, symbol, decimals, rate, underlyingAddress] = await Promise.all([
-      ctoken.name(),
-      ctoken.symbol(),
-      ctoken.decimals(),
-      ctoken.rate(),
-      ctoken.underlying(),
+    const [name, symbol, decimals, rateRaw, underlyingAddress] = await Promise.all([
+      ztoken.name(),
+      ztoken.symbol(),
+      ztoken.decimals(),
+      ztoken.rate(),
+      ztoken.underlying(),
     ]);
+    const rate = BigInt(rateRaw.toString());
+    const decimalsNumber = Number(decimals);
 
     console.log("👤 Confidential Token Balance:");
     console.log("User address:", user.address);
     console.log("Token name:", name);
     console.log("Token symbol:", symbol);
-    console.log("Decimals:", decimals);
-    console.log("Balance:", formatAmount(clearBalance, Number(decimals)), symbol);
+    console.log("Decimals:", decimalsNumber);
+    console.log("Balance:", formatAmount(clearBalance, decimalsNumber, hre), symbol);
     console.log("Underlying token:", underlyingAddress);
 
     return {
@@ -247,7 +256,7 @@ task("task:ctoken-balance", "Get confidential token balance")
       balance: clearBalance,
       name: name,
       symbol: symbol,
-      decimals: decimals,
+      decimals: decimalsNumber,
       rate: rate,
       underlying: underlyingAddress,
     };
@@ -255,13 +264,13 @@ task("task:ctoken-balance", "Get confidential token balance")
 
 /**
  * Transfer confidential tokens between addresses
- * Example: npx hardhat --network sepolia task:ctoken-transfer --amount 5 --from 1 --to 0x... --ctoken 0x...
+ * Example: npx hardhat --network sepolia task:ztoken-transfer --amount 5 --from 1 --to 0x... --ztoken 0x...
  */
-task("task:ctoken-transfer", "Transfer confidential tokens between addresses")
+task("task:ztoken-transfer", "Transfer confidential tokens between addresses")
   .addParam("amount", "Amount of confidential tokens to transfer")
   .addParam("from", "Sender user index (0, 1, 2, etc.)")
   .addParam("to", "Recipient address")
-  .addParam("ctoken", "PixelTokenWrapper contract address")
+  .addParam("ztoken", "PixelTokenWrapper contract address")
   .setAction(async function (taskArguments: TaskArguments, hre) {
     const { fhevm } = hre;
 
@@ -272,41 +281,59 @@ task("task:ctoken-transfer", "Transfer confidential tokens between addresses")
 
     const fromUser = await getSigner(hre, parseInt(taskArguments.from));
     const toAddress = taskArguments.to;
-    const amount = parseAmount(taskArguments.amount, 9); // Assuming 9 decimals for confidential tokens
 
-    const ctoken = await hre.ethers.getContractAt("PixelTokenWrapper", taskArguments.ctoken);
+    const ztoken = await hre.ethers.getContractAt("PixelTokenWrapper", taskArguments.ztoken);
+    const ztokenAddress = await ztoken.getAddress();
 
     // Get contract info
-    const [symbol, decimals] = await Promise.all([ctoken.symbol(), ctoken.decimals()]);
+    const [symbol, decimals] = await Promise.all([ztoken.symbol(), ztoken.decimals()]);
+    const decimalsNumber = Number(decimals);
+    const amount = parseAmount(taskArguments.amount, decimalsNumber, hre);
+    if (amount <= 0n) {
+      throw new Error("Amount must be greater than zero");
+    }
 
-    console.log(`Transferring ${formatAmount(amount, Number(decimals))} ${symbol}...`);
+    const balance = await ztoken.confidentialBalanceOf(fromUser.address);
+    const clearBalance = await fhevm.userDecryptEuint(
+      FhevmType.euint64,
+      balance.toString(),
+      ztokenAddress,
+      fromUser,
+    );
+    if (clearBalance < amount) {
+      throw new Error(
+        `Insufficient balance. Have: ${formatAmount(clearBalance, decimalsNumber, hre)}, Need: ${formatAmount(amount, decimalsNumber, hre)}`,
+      );
+    }
+
+    console.log(`Transferring ${formatAmount(amount, decimalsNumber, hre)} ${symbol}...`);
     console.log("From:", fromUser.address);
     console.log("To:", toAddress);
 
     // Create encrypted transfer input
     console.log("Creating encrypted transfer input...");
-    const encrypted = await fhevm.createEncryptedInput(taskArguments.ctoken, fromUser.address).add64(amount).encrypt();
+    const encrypted = await fhevm.createEncryptedInput(ztokenAddress, fromUser.address).add64(amount).encrypt();
 
     // Transfer tokens
     console.log("Executing transfer...");
-    const tx = await ctoken
+    const tx = await ztoken
       .connect(fromUser)
       ["confidentialTransfer(address,bytes32,bytes)"](toAddress, encrypted.handles[0], encrypted.inputProof);
     await tx.wait();
 
     // Get balances after transfer
-    const fromBalanceAfter = await ctoken.balanceOf(fromUser.address);
+    const fromBalanceAfter = await ztoken.confidentialBalanceOf(fromUser.address);
 
     const fromClearBalanceAfter = await fhevm.userDecryptEuint(
       FhevmType.euint64,
       fromBalanceAfter.toString(),
-      taskArguments.ctoken,
+      ztokenAddress,
       fromUser,
     );
 
     console.log("✅ Transfer completed successfully!");
-    console.log("Transferred amount:", formatAmount(amount, Number(decimals)));
-    console.log("Sender new balance:", formatAmount(fromClearBalanceAfter, Number(decimals)));
+    console.log("Transferred amount:", formatAmount(amount, decimalsNumber, hre));
+    console.log("Sender new balance:", formatAmount(fromClearBalanceAfter, decimalsNumber, hre));
 
     return {
       from: fromUser.address,

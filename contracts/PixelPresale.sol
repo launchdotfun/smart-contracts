@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import {FHE, externalEuint64, euint64, ebool} from "@fhevm/solidity/lib/FHE.sol";
+import {FHE, externalEuint64, euint64} from "@fhevm/solidity/lib/FHE.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {Address} from "@openzeppelin/contracts/utils/Address.sol";
 import {PixelTokenWrapper} from "./PixelTokenWrapper.sol";
 import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
-import {SepoliaConfig} from "@fhevm/solidity/config/ZamaConfig.sol";
+import {ZamaEthereumConfig} from "@fhevm/solidity/config/ZamaConfig.sol";
 import {PixelWETH} from "./PixelWETH.sol";
 
 interface IPixelPresale {
@@ -26,7 +26,7 @@ interface IPixelPresale {
     );
 }
 
-contract PixelPresale is SepoliaConfig, IPixelPresale, Ownable {
+contract PixelPresale is ZamaEthereumConfig, IPixelPresale, Ownable {
     using SafeERC20 for IERC20;
     using Address for address payable;
 
@@ -34,17 +34,14 @@ contract PixelPresale is SepoliaConfig, IPixelPresale, Ownable {
         uint256 tokenPresale;
         uint64 hardCap;
         uint64 softCap;
-        uint64 maxContribution;
-        uint64 minContribution;
         uint128 start;
         uint128 end;
     }
 
     struct Pool {
         IERC20 token;
-        PixelTokenWrapper ctoken;
+        PixelTokenWrapper ztoken;
         uint256 tokenBalance;
-        euint64 tokensSoldEncrypted;
         uint256 tokensSold;
         uint256 weiRaised;
         euint64 ethRaisedEncrypted;
@@ -58,6 +55,9 @@ contract PixelPresale is SepoliaConfig, IPixelPresale, Ownable {
     mapping(address user => euint64 claimableTokens) public claimableTokens;
     mapping(address user => bool claimed) public claimed;
     mapping(address user => bool refunded) public refunded;
+    uint64 public fillNumerator;
+    uint64 public fillDenominator;
+    mapping(address user => bool settled) public settled;
 
     Pool public pool;
 
@@ -65,21 +65,24 @@ contract PixelPresale is SepoliaConfig, IPixelPresale, Ownable {
         address _owner,
         address _zweth,
         address _token,
-        address _ctoken,
+        address _ztoken,
         PresaleOptions memory _options
     ) Ownable(_owner) {
         _prevalidatePool(_options);
 
         pool.token = IERC20(_token);
-        pool.ctoken = PixelTokenWrapper(_ctoken);
+        pool.ztoken = PixelTokenWrapper(_ztoken);
         pool.zweth = _zweth;
         pool.options = _options;
 
-        uint256 rate = PixelTokenWrapper(_ctoken).rate();
+        uint256 rate = PixelTokenWrapper(_ztoken).rate();
 
         pool.state = 1;
 
         pool.tokenBalance = _options.tokenPresale;
+
+        pool.ethRaisedEncrypted = FHE.asEuint64(0);
+        FHE.allowThis(pool.ethRaisedEncrypted);
         require(_options.hardCap > 0, "Hard cap zero");
 
         uint256 presaleUnits = _options.tokenPresale / rate;
@@ -93,11 +96,11 @@ contract PixelPresale is SepoliaConfig, IPixelPresale, Ownable {
 
     receive() external payable {}
 
-    function purchase(address beneficiary, externalEuint64 encryptedAmount, bytes calldata inputProof) external {
+    function placeBid(address beneficiary, externalEuint64 encryptedAmount, bytes calldata inputProof) external {
         require(pool.state == 1, "Invalid state");
-        require(block.timestamp >= pool.options.start && block.timestamp <= pool.options.end, "Not in purchase period");
+        require(block.timestamp >= pool.options.start && block.timestamp <= pool.options.end, "Not in bid period");
 
-        _handlePurchase(beneficiary, encryptedAmount, inputProof);
+        _handleBid(beneficiary, encryptedAmount, inputProof);
     }
 
     function claimTokens(address beneficiary) external {
@@ -107,8 +110,9 @@ contract PixelPresale is SepoliaConfig, IPixelPresale, Ownable {
 
         euint64 claimableToken = claimableTokens[beneficiary];
 
-        FHE.allowTransient(claimableToken, address(pool.ctoken));
-        pool.ctoken.confidentialTransfer(beneficiary, claimableToken);
+        FHE.allowTransient(claimableToken, address(pool.ztoken));
+        FHE.allowTransient(claimableToken, address(this));
+        pool.ztoken.confidentialTransfer(beneficiary, claimableToken);
     }
 
     function refund() external {
@@ -118,17 +122,13 @@ contract PixelPresale is SepoliaConfig, IPixelPresale, Ownable {
         require(!refunded[beneficiary], "Already refunded");
 
         euint64 amount = contributions[beneficiary];
-
-        FHE.allowTransient(amount, address(pool.zweth));
-        PixelWETH(pool.zweth).confidentialTransfer(beneficiary, amount);
+        require(euint64.unwrap(amount) != bytes32(0), "No bid");
 
         refunded[beneficiary] = true;
-    }
 
-    function _prevalidatePurchase() internal view returns (bool) {
-        if (pool.state != 1) revert InvalidState(pool.state);
-        if (block.timestamp < pool.options.start || block.timestamp > pool.options.end) revert NotInPurchasePeriod();
-        return true;
+        FHE.allowTransient(amount, address(pool.zweth));
+        FHE.allowTransient(amount, address(this));
+        PixelWETH(pool.zweth).confidentialTransfer(beneficiary, amount);
     }
 
     function _prevalidatePool(PresaleOptions memory _options) internal pure returns (bool) {
@@ -138,31 +138,23 @@ contract PixelPresale is SepoliaConfig, IPixelPresale, Ownable {
         return true;
     }
 
-    function requestFinalizePresaleState() external {
+    function finalizePreSale(
+        uint64 ethRaised,
+        uint64 tokensSold,
+        uint64 _fillNumerator,
+        uint64 _fillDenominator
+    ) external virtual onlyOwner {
         uint8 currentState = pool.state;
         uint128 endTime = pool.options.end;
 
         require(currentState == 1 || currentState == 2, "Presale is not active");
         require(block.timestamp >= endTime, "Presale is not ended");
+        require(_fillDenominator != 0, "Invalid fill ratio");
 
         pool.state = 2;
 
-        euint64 ethRaisedEncrypted = pool.ethRaisedEncrypted;
-        euint64 tokensSoldEncrypted = pool.tokensSoldEncrypted;
-        bytes32[] memory cts = new bytes32[](2);
-        cts[0] = euint64.unwrap(ethRaisedEncrypted);
-        cts[1] = euint64.unwrap(tokensSoldEncrypted);
-
-        FHE.requestDecryption(cts, this.finalizePreSale.selector);
-    }
-
-    function finalizePreSale(
-        uint256 requestID,
-        uint64 ethRaised,
-        uint64 tokensSold,
-        bytes[] memory signatures
-    ) external virtual {
-        FHE.checkSignatures(requestID, signatures);
+        fillNumerator = _fillNumerator;
+        fillDenominator = _fillDenominator;
 
         _handleFinalizePreSale(ethRaised, tokensSold);
     }
@@ -171,70 +163,37 @@ contract PixelPresale is SepoliaConfig, IPixelPresale, Ownable {
         return this.onERC721Received.selector;
     }
 
-    function _handleContribution(
-        euint64 contributed,
-        euint64 purchaseAmount,
-        uint64 minContribution,
-        uint64 maxContribution
-    ) internal returns (euint64 finalPurchase) {
-        euint64 ableToContribute = FHE.sub(maxContribution, contributed);
-        ebool isOverMaxContribute = FHE.ge(purchaseAmount, ableToContribute);
-        finalPurchase = FHE.select(isOverMaxContribute, ableToContribute, purchaseAmount);
-
-        ebool isPassMinContribution = FHE.ge(FHE.add(finalPurchase, contributed), minContribution);
-        finalPurchase = FHE.select(isPassMinContribution, finalPurchase, FHE.asEuint64(0));
-    }
-
-    function _handlePurchase(address beneficiary, externalEuint64 encryptedAmount, bytes calldata inputProof) internal {
+    function _handleBid(address beneficiary, externalEuint64 encryptedAmount, bytes calldata inputProof) internal {
         address zweth = pool.zweth;
-        uint64 tokenPerEthWithDecimals = pool.tokenPerEthWithDecimals;
-        uint64 hardCap = pool.options.hardCap;
 
-        euint64 userContribution = contributions[beneficiary];
-        euint64 userClaimableTokens = claimableTokens[beneficiary];
-        euint64 purchaseAmount = FHE.fromExternal(encryptedAmount, inputProof);
-        euint64 finalPurchase = _handleContribution(
-            userContribution,
-            purchaseAmount,
-            pool.options.minContribution,
-            pool.options.maxContribution
-        );
+        euint64 userBid = contributions[beneficiary];
+        if (euint64.unwrap(userBid) == bytes32(0)) {
+            userBid = FHE.asEuint64(0);
+        }
 
-        FHE.allowTransient(finalPurchase, zweth);
-        euint64 transferred = PixelWETH(zweth).confidentialTransferFrom(beneficiary, address(this), finalPurchase);
+        euint64 bidAmount = FHE.fromExternal(encryptedAmount, inputProof);
+
+        euint64 newUserBid = FHE.add(userBid, bidAmount);
+
+        FHE.allowTransient(bidAmount, zweth);
+        euint64 transferred = PixelWETH(zweth).confidentialTransferFrom(beneficiary, address(this), bidAmount);
 
         euint64 currentEthRaised = pool.ethRaisedEncrypted;
+
         euint64 newEthRaised = FHE.add(currentEthRaised, transferred);
-        ebool isAbove = FHE.gt(newEthRaised, hardCap);
-        euint64 refundAmount = FHE.select(isAbove, FHE.sub(newEthRaised, hardCap), FHE.asEuint64(0));
-        euint64 finalEthRaised = FHE.sub(newEthRaised, refundAmount);
-        euint64 contributeAmount = FHE.sub(transferred, refundAmount);
 
-        pool.ethRaisedEncrypted = finalEthRaised;
+        pool.ethRaisedEncrypted = newEthRaised;
+        contributions[beneficiary] = newUserBid;
+
         FHE.allowThis(pool.ethRaisedEncrypted);
-
-        FHE.allowTransient(refundAmount, zweth);
-        PixelWETH(zweth).confidentialTransfer(beneficiary, refundAmount);
-
-        euint64 newUserContribution = FHE.add(userContribution, contributeAmount);
-        euint64 tokensSoldEncrypted = FHE.mul(contributeAmount, tokenPerEthWithDecimals);
-        euint64 newUserClaimableTokens = FHE.add(userClaimableTokens, tokensSoldEncrypted);
-        euint64 currentTokensSold = pool.tokensSoldEncrypted;
-        euint64 newTokensSold = FHE.add(currentTokensSold, tokensSoldEncrypted);
-
-        contributions[beneficiary] = newUserContribution;
-        claimableTokens[beneficiary] = newUserClaimableTokens;
-        pool.tokensSoldEncrypted = newTokensSold;
-
-        FHE.allowThis(newUserContribution);
-        FHE.allow(newUserContribution, beneficiary);
-        FHE.allowThis(newTokensSold);
-        FHE.allowThis(newUserClaimableTokens);
-        FHE.allow(newUserClaimableTokens, beneficiary);
+        FHE.allowThis(newUserBid);
+        FHE.allow(newUserBid, beneficiary);
+        FHE.allowTransient(transferred, address(this));
+        FHE.allowTransient(bidAmount, address(this));
     }
 
     function _handleFinalizePreSale(uint64 zwethRaised, uint64 tokensSold) internal {
-        uint256 rate = pool.ctoken.rate();
+        uint256 rate = pool.ztoken.rate();
         uint256 tokenPresale = pool.options.tokenPresale;
         uint64 softCap = pool.options.softCap;
         euint64 ethRaisedEncrypted = pool.ethRaisedEncrypted;
@@ -259,11 +218,40 @@ contract PixelPresale is SepoliaConfig, IPixelPresale, Ownable {
             }
 
             IERC20 token = pool.token;
-            token.forceApprove(address(pool.ctoken), tokensSoldValue);
-            pool.ctoken.wrap(address(this), tokensSoldValue);
+            token.forceApprove(address(pool.ztoken), tokensSoldValue);
+            pool.ztoken.wrap(address(this), tokensSoldValue);
 
             FHE.allowTransient(ethRaisedEncrypted, address(pool.zweth));
-            PixelWETH(pool.zweth).withdraw(address(this), owner(), ethRaisedEncrypted);
+            FHE.allowTransient(ethRaisedEncrypted, address(this));
+            PixelWETH(pool.zweth).withdrawAndFinalize(address(this), owner(), ethRaisedEncrypted, zwethRaised);
         }
+    }
+
+    function settleBid(address beneficiary) external {
+        require(pool.state == 4, "Presale not successful");
+        require(!settled[beneficiary], "Already settled");
+        require(fillDenominator != 0, "Fill ratio not set");
+
+        euint64 userBid = contributions[beneficiary];
+        require(euint64.unwrap(userBid) != bytes32(0), "No bid");
+
+        // used = userBid * fillNumerator / fillDenominator
+        euint64 used = FHE.div(FHE.mul(userBid, fillNumerator), fillDenominator);
+
+        euint64 refundAmount = FHE.sub(userBid, used);
+
+        // allocatedTokens = used * tokenPerEthWithDecimals
+        euint64 allocatedTokens = FHE.mul(used, pool.tokenPerEthWithDecimals);
+
+        // Lưu claimableTokens để user claim zToken
+        claimableTokens[beneficiary] = allocatedTokens;
+        FHE.allowThis(allocatedTokens);
+        FHE.allow(allocatedTokens, beneficiary);
+        FHE.allowTransient(refundAmount, address(this));
+        // Refund phần dư zWETH
+        FHE.allowTransient(refundAmount, pool.zweth);
+        PixelWETH(pool.zweth).confidentialTransfer(beneficiary, refundAmount);
+
+        settled[beneficiary] = true;
     }
 }
