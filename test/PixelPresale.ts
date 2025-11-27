@@ -369,6 +369,156 @@ describe("PixelPresale (bid-based) integration flow", function () {
         "Already claimed",
       );
     });
+
+    it("non-owner cannot finalize presale", async function () {
+      const totalBid = BID_AMOUNTS.alice + BID_AMOUNTS.bob + BID_AMOUNTS.charlie;
+
+      // move time so presale is endable
+      await network.provider.send("evm_increaseTime", [TIME_INCREASE]);
+
+      const pool = await presale.pool();
+      const hardCapBig = BigInt(pool.options.hardCap.toString());
+      const tokenPerEthBig = BigInt(pool.tokenPerEthWithDecimals.toString());
+
+      const ethRaisedUsed = totalBid <= hardCapBig ? totalBid : hardCapBig;
+      const tokensSold = ethRaisedUsed * tokenPerEthBig;
+
+      // Alice (non-owner) tries to finalize
+      await expect(
+        presale.connect(signers.alice).finalizePreSale(ethRaisedUsed, tokensSold, ethRaisedUsed, totalBid),
+      ).to.be.revertedWithCustomError(presale, "OwnableUnauthorizedAccount");
+    });
+  });
+
+  describe("Oversubscription: total bid > hard cap → pro-rata refunds", function () {
+    const OVERSUB_BIDS = {
+      alice: ethers.parseUnits("6", 9),
+      bob: ethers.parseUnits("5", 9),
+      charlie: ethers.parseUnits("4", 9),
+    } as const;
+
+    before(async function () {
+      await setupPresale();
+    });
+
+    it("wrap ETH into zWETH for all bidders", async function () {
+      const { clearBalance: a } = await TestHelpers.wrapETH(signers.alice, OVERSUB_BIDS.alice, zweth);
+      const { clearBalance: b } = await TestHelpers.wrapETH(signers.bob, OVERSUB_BIDS.bob, zweth);
+      const { clearBalance: c } = await TestHelpers.wrapETH(signers.charlie, OVERSUB_BIDS.charlie, zweth);
+
+      expect(a).to.eq(OVERSUB_BIDS.alice);
+      expect(b).to.eq(OVERSUB_BIDS.bob);
+      expect(c).to.eq(OVERSUB_BIDS.charlie);
+    });
+
+    it("Alice, Bob, Charlie place bids (oversubscribed)", async function () {
+      await TestHelpers.ensureBidPeriod(presale);
+
+      await TestHelpers.approveZWETH(signers.alice, presaleAddress, zweth);
+      await TestHelpers.approveZWETH(signers.bob, presaleAddress, zweth);
+      await TestHelpers.approveZWETH(signers.charlie, presaleAddress, zweth);
+
+      const { clearContribution: ca } = await TestHelpers.performBid(
+        presale,
+        signers.alice,
+        OVERSUB_BIDS.alice,
+        presaleAddress,
+      );
+      const { clearContribution: cb } = await TestHelpers.performBid(
+        presale,
+        signers.bob,
+        OVERSUB_BIDS.bob,
+        presaleAddress,
+      );
+      const { clearContribution: cc } = await TestHelpers.performBid(
+        presale,
+        signers.charlie,
+        OVERSUB_BIDS.charlie,
+        presaleAddress,
+      );
+
+      expect(ca).to.eq(OVERSUB_BIDS.alice);
+      expect(cb).to.eq(OVERSUB_BIDS.bob);
+      expect(cc).to.eq(OVERSUB_BIDS.charlie);
+    });
+
+    it("cannot placeBid after end time", async function () {
+      const pool = await presale.pool();
+      const end = Number(pool.options.end);
+
+      // jump to just after end
+      await time.increaseTo(end + 1);
+
+      const encrypted = await TestHelpers.createEncryptedBid(presaleAddress, signers.alice, OVERSUB_BIDS.alice);
+
+      await expect(
+        presale.connect(signers.alice).placeBid(signers.alice.address, encrypted.handles[0], encrypted.inputProof),
+      ).to.be.revertedWith("Not in bid period");
+    });
+
+    it("finalize presale caps ethRaisedUsed to hardcap and keeps state success", async function () {
+      const totalBid = OVERSUB_BIDS.alice + OVERSUB_BIDS.bob + OVERSUB_BIDS.charlie;
+
+      const { ethRaisedUsed, tokensSold } = await TestHelpers.finalizePresale(presale, signers.deployer, totalBid);
+
+      const pool = await presale.pool();
+      const rate = BigInt((await ztoken.rate()).toString());
+
+      const expectedWeiRaised = ethRaisedUsed * 10n ** 9n;
+      const expectedTokensSoldUnderlying = tokensSold * rate;
+
+      await TestHelpers.validateFinalization(presale, 4, expectedWeiRaised, expectedTokensSoldUnderlying);
+
+      expect(ethRaisedUsed).to.eq(BigInt(pool.options.hardCap.toString()));
+      expect(totalBid).to.be.gt(BigInt(pool.options.hardCap.toString()));
+    });
+
+    it("Alice settles bid, receives partial refund and claimable tokens", async function () {
+      const preBalance = await fhevm.userDecryptEuint(
+        FhevmType.euint64,
+        (await zweth.confidentialBalanceOf(signers.alice.address)).toString(),
+        await zweth.getAddress(),
+        signers.alice,
+      );
+
+      expect(preBalance).to.eq(0n);
+
+      await presale.connect(signers.alice).settleBid(signers.alice.address);
+
+      const postBalance = await fhevm.userDecryptEuint(
+        FhevmType.euint64,
+        (await zweth.confidentialBalanceOf(signers.alice.address)).toString(),
+        await zweth.getAddress(),
+        signers.alice,
+      );
+
+      // partial refund: > 0 nhưng < bid ban đầu
+      expect(postBalance).to.be.gt(0n);
+      expect(postBalance).to.be.lt(OVERSUB_BIDS.alice);
+
+      const claimable = await presale.claimableTokens(signers.alice.address);
+      const clearClaimable = await fhevm.userDecryptEuint(
+        FhevmType.euint64,
+        claimable.toString(),
+        presaleAddress,
+        signers.alice,
+      );
+
+      expect(clearClaimable).to.be.gt(0n);
+
+      // Alice claim zToken sau khi settle
+      await presale.connect(signers.alice).claimTokens(signers.alice.address);
+
+      const zBal = await ztoken.confidentialBalanceOf(signers.alice.address);
+      const clearZBal = await fhevm.userDecryptEuint(
+        FhevmType.euint64,
+        zBal.toString(),
+        await ztoken.getAddress(),
+        signers.alice,
+      );
+
+      expect(clearZBal).to.be.gt(0n);
+    });
   });
 
   // ===== Sad case: only Alice bids below softCap → presale fails, full refund =====
@@ -395,6 +545,12 @@ describe("PixelPresale (bid-based) integration flow", function () {
       );
 
       expect(clearContribution).to.eq(BID_AMOUNTS.alice);
+    });
+
+    it("cannot settleBid before presale is finalized", async function () {
+      await expect(presale.connect(signers.alice).settleBid(signers.alice.address)).to.be.revertedWith(
+        "Presale not successful",
+      );
     });
 
     it("finalize presale: should go to state 3 (cancelled)", async function () {

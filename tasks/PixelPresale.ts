@@ -234,7 +234,7 @@ task("task:purchase", "Purchase tokens in a presale")
 
     // Purchase tokens
     console.log("Executing purchase...");
-    const tx = await presale.connect(user).purchase(beneficiary, encrypted.handles[0], encrypted.inputProof);
+    const tx = await presale.connect(user).placeBid(beneficiary, encrypted.handles[0], encrypted.inputProof);
     await tx.wait();
 
     // Get contribution and claimable tokens
@@ -275,13 +275,17 @@ task("task:finalize-presale", "Finalize a presale")
 
     const pool = await presale.pool();
     const ethRaised = await fhevm.publicDecryptEuint(FhevmType.euint64, pool.ethRaisedEncrypted.toString());
-    const tokensSold = await fhevm.publicDecryptEuint(FhevmType.euint64, pool.tokensSoldEncrypted.toString());
+    const tokensSold = pool.tokensSold;
 
     console.log("Pool state:", pool.state);
     console.log("Eth raised:", formatAmount(ethRaised, 9, hre), "ETH");
     console.log("Tokens sold:", formatAmount(tokensSold, 9, hre), "TTK");
 
-    const tx = await presale.connect(_user).finalizePreSale(ethRaised, tokensSold);
+    // Use full fill ratio (100%) by default; adjust if you support partial fills later
+    const fillNumerator = 1n;
+    const fillDenominator = 1n;
+
+    const tx = await presale.connect(_user).finalizePreSale(ethRaised, tokensSold, fillNumerator, fillDenominator);
     await tx.wait();
 
     console.log("✅ Finalization completed successfully!");

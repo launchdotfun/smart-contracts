@@ -197,6 +197,7 @@ contract PixelPresale is ZamaEthereumConfig, IPixelPresale, Ownable {
         uint256 tokenPresale = pool.options.tokenPresale;
         uint64 softCap = pool.options.softCap;
         euint64 ethRaisedEncrypted = pool.ethRaisedEncrypted;
+        euint64 ethUsedEncrypted = FHE.div(FHE.mul(ethRaisedEncrypted, fillNumerator), fillDenominator);
 
         uint256 weiRaised = zwethRaised * 1e9;
         uint256 tokensSoldValue = tokensSold * rate;
@@ -221,9 +222,9 @@ contract PixelPresale is ZamaEthereumConfig, IPixelPresale, Ownable {
             token.forceApprove(address(pool.ztoken), tokensSoldValue);
             pool.ztoken.wrap(address(this), tokensSoldValue);
 
-            FHE.allowTransient(ethRaisedEncrypted, address(pool.zweth));
-            FHE.allowTransient(ethRaisedEncrypted, address(this));
-            PixelWETH(pool.zweth).withdrawAndFinalize(address(this), owner(), ethRaisedEncrypted, zwethRaised);
+            FHE.allowTransient(ethUsedEncrypted, address(pool.zweth));
+            FHE.allowTransient(ethUsedEncrypted, address(this));
+            PixelWETH(pool.zweth).withdrawAndFinalize(address(this), owner(), ethUsedEncrypted, zwethRaised);
         }
     }
 
