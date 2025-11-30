@@ -7,7 +7,7 @@ import {FHE, externalEuint64, euint64} from "@fhevm/solidity/lib/FHE.sol";
 import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 import {ERC7984} from "@openzeppelin/contracts-confidential/contracts/token/ERC7984/ERC7984.sol";
 
-contract PixelWETH is ERC7984, ZamaEthereumConfig {
+contract LaunchDotFunWETH is ERC7984, ZamaEthereumConfig {
     uint8 private immutable DECIMALS;
     uint256 private immutable RATE;
 

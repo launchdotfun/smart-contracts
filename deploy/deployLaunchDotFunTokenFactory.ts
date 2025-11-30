@@ -7,21 +7,22 @@ const func: DeployFunction = async function (hre: HardhatRuntimeEnvironment) {
 
   console.log("Deployer address:", deployer);
 
-  const tokenFactory = await deploy("PixelTokenFactory", {
+  const tokenFactory = await deploy("LaunchDotFunTokenFactory", {
     from: deployer,
     log: true,
   });
-  console.log(`PixelTokenFactory deployed at:`, tokenFactory.address);
+  console.log(`LaunchDotFunTokenFactory deployed at:`, tokenFactory.address);
 
   if (tokenFactory.address) {
-    console.log("✅ PixelTokenFactory deployment successful!");
+    console.log("✅ LaunchDotFunTokenFactory deployment successful!");
     console.log("📋 Contract Address:", tokenFactory.address);
     console.log("🔗 Transaction Hash:", tokenFactory.transactionHash);
   } else {
-    console.log("❌ PixelTokenFactory deployment failed!");
+    console.log("❌ LaunchDotFunTokenFactory deployment failed!");
   }
 };
 
 export default func;
-func.id = "deploy_pixelTokenFactory";
-func.tags = ["PixelTokenFactory"];
+func.id = "deploy_launchdotfunTokenFactory";
+func.tags = ["LaunchDotFunTokenFactory"];
+

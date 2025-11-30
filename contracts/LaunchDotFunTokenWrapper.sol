@@ -8,7 +8,7 @@ import {
 } from "@openzeppelin/contracts-confidential/contracts/token/ERC7984/extensions/ERC7984ERC20Wrapper.sol";
 import {ERC7984} from "@openzeppelin/contracts-confidential/contracts/token/ERC7984/ERC7984.sol";
 
-contract PixelTokenWrapper is ZamaEthereumConfig, ERC7984ERC20Wrapper {
+contract LaunchDotFunTokenWrapper is ZamaEthereumConfig, ERC7984ERC20Wrapper {
     constructor(
         string memory name_,
         string memory symbol_,

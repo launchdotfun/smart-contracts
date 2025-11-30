@@ -163,7 +163,7 @@ task("task:create-presale", "Create a new privacy presale")
           return null;
         }
       })
-      .find((e: unknown) => e && (e as { name?: string }).name === "PixelPresaleCreated");
+      .find((e: unknown) => e && (e as { name?: string }).name === "LaunchDotFunPresaleCreated");
 
     if (!event) {
       throw new Error("Failed to extract presale address from deployment event");

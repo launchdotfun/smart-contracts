@@ -1,7 +1,7 @@
-# PixelPad - Privacy-Preserving Launchpad Protocol
+# LaunchDotFun - Privacy-Preserving Launchpad Protocol
 
 <p align="center">
-    <a target="blank"><img src="./logo.png" alt="PixelPad Logo" width="200" /></a>
+    <a target="blank"><img src="./logo.png" alt="LaunchDotFun Logo" width="200" /></a>
 </p>
 
 <p align="center">
@@ -10,7 +10,7 @@ A decentralized launchpad protocol focused on financial privacy, powered by Full
 
 ## Description
 
-**PixelPad** is a decentralized launchpad protocol focused on financial privacy. It leverages Fully Homomorphic
+**LaunchDotFun** is a decentralized launchpad protocol focused on financial privacy. It leverages Fully Homomorphic
 Encryption (FHE) powered by the Zama protocol to enable private participation in token launches—users can invest without
 revealing their token purchase amounts.
 
@@ -31,13 +31,13 @@ revealing their token purchase amounts.
 
 ## How It Works
 
-PixelPad supports two main sale modes:
+LaunchDotFun supports two main sale modes:
 
 ### Presale Mode
 
 #### 1. Token Seller Setup
 
-The seller creates a token or deposits their standard ERC-20 token into the PixelPad contract.
+The seller creates a token or deposits their standard ERC-20 token into the LaunchDotFun contract.
 
 #### 2. User Contributions
 
@@ -64,7 +64,7 @@ settlement.
 
 ### Auction Mode
 
-Similar to MegaETH's auction mechanism, PixelPad offers a private auction mode:
+Similar to MegaETH's auction mechanism, LaunchDotFun offers a private auction mode:
 
 #### 1. Auction Setup
 

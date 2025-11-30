@@ -11,7 +11,7 @@ import { formatAmount, getSigner, parseAmount } from "./helpers";
 task("task:zweth-deposit", "Deposit ETH to LaunchDotFunWETH")
   .addParam("amount", "Amount of ETH to deposit")
   .addParam("user", "User index (0, 1, 2, etc.)")
-  .addParam("zweth", "PixelWETH contract address")
+  .addParam("zweth", "LaunchDotFunWETH contract address")
   .addOptionalParam("to", "Recipient address (defaults to user)")
   .setAction(async function (taskArguments: TaskArguments, hre) {
     const { fhevm } = hre;
@@ -81,7 +81,7 @@ task("task:zweth-deposit", "Deposit ETH to LaunchDotFunWETH")
 task("task:zweth-withdraw", "Withdraw ETH from LaunchDotFunWETH")
   .addParam("amount", "Amount of zWETH to withdraw")
   .addParam("user", "User index (0, 1, 2, etc.)")
-  .addParam("zweth", "PixelWETH contract address")
+  .addParam("zweth", "LaunchDotFunWETH contract address")
   .addOptionalParam("to", "Recipient address for ETH")
   .setAction(async function (taskArguments: TaskArguments, hre) {
     const { fhevm } = hre;
@@ -160,7 +160,7 @@ task("task:zweth-withdraw", "Withdraw ETH from LaunchDotFunWETH")
  */
 task("task:zweth-balance", "Get LaunchDotFunWETH balance")
   .addParam("user", "User index (0, 1, 2, etc.)")
-  .addParam("zweth", "PixelWETH contract address")
+  .addParam("zweth", "LaunchDotFunWETH contract address")
   .setAction(async function (taskArguments: TaskArguments, hre) {
     const { fhevm } = hre;
 
@@ -196,7 +196,7 @@ task("task:zweth-balance", "Get LaunchDotFunWETH balance")
  * Example: npx hardhat --network sepolia task:zweth-info --zweth 0x...
  */
 task("task:zweth-info", "Get LaunchDotFunWETH contract information")
-  .addParam("zweth", "PixelWETH contract address")
+  .addParam("zweth", "LaunchDotFunWETH contract address")
   .setAction(async function (taskArguments: TaskArguments, hre) {
     console.log("Getting LaunchDotFunWETH contract information...");
 

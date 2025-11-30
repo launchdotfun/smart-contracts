@@ -7,22 +7,23 @@ const func: DeployFunction = async function (hre: HardhatRuntimeEnvironment) {
 
   console.log("Deployer address:", deployer);
 
-  const zwethDeployment = await get("PixelWETH");
+  const zwethDeployment = await get("LaunchDotFunWETH");
   const zwethAddress = zwethDeployment.address;
-  console.log("Using PixelWETH address:", zwethAddress);
+  console.log("Using LaunchDotFunWETH address:", zwethAddress);
 
-  const tokenFactoryDeployment = await get("PixelTokenFactory");
+  const tokenFactoryDeployment = await get("LaunchDotFunTokenFactory");
   const tokenFactoryAddress = tokenFactoryDeployment.address;
-  console.log("Using PixelTokenFactory address:", tokenFactoryAddress);
+  console.log("Using LaunchDotFunTokenFactory address:", tokenFactoryAddress);
 
-  const factory = await deploy("PixelPresaleFactory", {
+  const factory = await deploy("LaunchDotFunPresaleFactory", {
     from: deployer,
     log: true,
     args: [zwethAddress, tokenFactoryAddress],
   });
 
-  console.log(`PixelPresaleFactory deployed at:`, factory.address);
+  console.log(`LaunchDotFunPresaleFactory deployed at:`, factory.address);
 };
 export default func;
-func.id = "deploy_pixelPresaleFactory"; // id required to prevent reexecution
-func.tags = ["PixelPresaleFactory"];
+func.id = "deploy_launchdotfunPresaleFactory"; // id required to prevent reexecution
+func.tags = ["LaunchDotFunPresaleFactory"];
+

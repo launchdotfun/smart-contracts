@@ -4,7 +4,7 @@ pragma solidity ^0.8.26;
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 
-contract PixelTokenFactory {
+contract LaunchDotFunTokenFactory {
     event TokenCreated(
         address indexed tokenAddress,
         string name,
@@ -25,7 +25,7 @@ contract PixelTokenFactory {
         uint256 totalSupply,
         string memory url
     ) external returns (address tokenAddress) {
-        PixelToken newToken = new PixelToken(name, symbol, decimals, totalSupply, url, msg.sender);
+        LaunchDotFunToken newToken = new LaunchDotFunToken(name, symbol, decimals, totalSupply, url, msg.sender);
 
         tokenAddress = address(newToken);
         createdTokens.push(tokenAddress);
@@ -58,7 +58,7 @@ contract PixelTokenFactory {
     }
 }
 
-contract PixelToken is ERC20, Ownable {
+contract LaunchDotFunToken is ERC20, Ownable {
     string public tokenUrl;
     uint8 private _decimals;
 

@@ -8,16 +8,16 @@ import { ethers, fhevm, network } from "hardhat";
 import {
   IERC20,
   IERC20__factory,
-  PixelPresale,
-  PixelPresaleFactory,
-  PixelPresaleFactory__factory,
-  PixelPresale__factory,
-  PixelTokenFactory,
-  PixelTokenFactory__factory,
-  PixelTokenWrapper,
-  PixelTokenWrapper__factory,
-  PixelWETH,
-  PixelWETH__factory,
+  LaunchDotFunPresale,
+  LaunchDotFunPresaleFactory,
+  LaunchDotFunPresaleFactory__factory,
+  LaunchDotFunPresale__factory,
+  LaunchDotFunTokenFactory,
+  LaunchDotFunTokenFactory__factory,
+  LaunchDotFunTokenWrapper,
+  LaunchDotFunTokenWrapper__factory,
+  LaunchDotFunWETH,
+  LaunchDotFunWETH__factory,
 } from "../types";
 
 // ====== Constants ======
@@ -51,7 +51,7 @@ type Signers = {
 // ====== Test helpers ======
 
 class TestHelpers {
-  static async wrapETH(user: HardhatEthersSigner, amount: bigint, zweth: PixelWETH) {
+  static async wrapETH(user: HardhatEthersSigner, amount: bigint, zweth: LaunchDotFunWETH) {
     if (amount > 0n) {
       const wrapAmount = amount * 10n ** 9n; // zWETH has 9 decimals
       await zweth.connect(user).deposit(user.address, { value: wrapAmount });
@@ -67,7 +67,7 @@ class TestHelpers {
     return { balance, clearBalance };
   }
 
-  static async ensureBidPeriod(presale: PixelPresale) {
+  static async ensureBidPeriod(presale: LaunchDotFunPresale) {
     const currentTime = await time.latest();
     const pool = await presale.pool();
     if (currentTime < pool.options.start) {
@@ -75,7 +75,7 @@ class TestHelpers {
     }
   }
 
-  static async approveZWETH(user: HardhatEthersSigner, presaleAddress: string, zweth: PixelWETH) {
+  static async approveZWETH(user: HardhatEthersSigner, presaleAddress: string, zweth: LaunchDotFunWETH) {
     await zweth.connect(user).setOperator(presaleAddress, BigInt((await time.latest()) + OPERATOR_EXPIRY_OFFSET));
   }
 
@@ -84,7 +84,12 @@ class TestHelpers {
     return await fhevm.createEncryptedInput(presaleAddress, user.address).add64(amount).encrypt();
   }
 
-  static async performBid(presale: PixelPresale, user: HardhatEthersSigner, amount: bigint, presaleAddress: string) {
+  static async performBid(
+    presale: LaunchDotFunPresale,
+    user: HardhatEthersSigner,
+    amount: bigint,
+    presaleAddress: string,
+  ) {
     const encrypted = await this.createEncryptedBid(presaleAddress, user, amount);
 
     await presale.connect(user).placeBid(user.address, encrypted.handles[0], encrypted.inputProof);
@@ -100,7 +105,7 @@ class TestHelpers {
     return { clearContribution };
   }
 
-  static async claimTokens(presale: PixelPresale, user: HardhatEthersSigner, ztoken: PixelTokenWrapper) {
+  static async claimTokens(presale: LaunchDotFunPresale, user: HardhatEthersSigner, ztoken: LaunchDotFunTokenWrapper) {
     await presale.connect(user).claimTokens(user.address);
 
     const balance = await ztoken.confidentialBalanceOf(user.address);
@@ -114,7 +119,7 @@ class TestHelpers {
   }
 
   static async finalizePresale(
-    presale: PixelPresale,
+    presale: LaunchDotFunPresale,
     caller: HardhatEthersSigner,
     totalBid: bigint, // truyền từ test vào
   ) {
@@ -148,7 +153,7 @@ class TestHelpers {
   }
 
   static async validateFinalization(
-    presale: PixelPresale,
+    presale: LaunchDotFunPresale,
     expectedState: number,
     expectedWeiRaised: bigint,
     expectedTokensSoldUnderlying: bigint,
@@ -163,14 +168,14 @@ class TestHelpers {
 
 // ====== Test suite ======
 
-describe("PixelPresale (bid-based) integration flow", function () {
+describe("LaunchDotFunPresale (bid-based) integration flow", function () {
   let signers: Signers;
-  let zweth: PixelWETH;
-  let factory: PixelPresaleFactory;
-  let presale: PixelPresale;
+  let zweth: LaunchDotFunWETH;
+  let factory: LaunchDotFunPresaleFactory;
+  let presale: LaunchDotFunPresale;
   let presaleAddress: string;
   let token: IERC20;
-  let ztoken: PixelTokenWrapper;
+  let ztoken: LaunchDotFunTokenWrapper;
   let now: number;
 
   let zwethAddress: string;
@@ -183,18 +188,59 @@ describe("PixelPresale (bid-based) integration flow", function () {
     }
 
     // Deploy zWETH
-    zweth = (await (await new PixelWETH__factory(signers.deployer).deploy()).waitForDeployment()) as PixelWETH;
+    zweth = (await (
+      await new LaunchDotFunWETH__factory(signers.deployer).deploy()
+    ).waitForDeployment()) as LaunchDotFunWETH;
     zwethAddress = await zweth.getAddress();
 
-    // Deploy PixelTokenFactory
+    // Deploy LaunchDotFunTokenFactory
     const tokenFactory = (await (
-      await new PixelTokenFactory__factory(signers.deployer).deploy()
-    ).waitForDeployment()) as PixelTokenFactory;
+      await new LaunchDotFunTokenFactory__factory(signers.deployer).deploy()
+    ).waitForDeployment()) as LaunchDotFunTokenFactory;
 
-    // Deploy PixelPresaleFactory
+    // Deploy LaunchDotFunPresaleFactory
     factory = (await (
-      await new PixelPresaleFactory__factory(signers.deployer).deploy(zwethAddress, await tokenFactory.getAddress())
-    ).waitForDeployment()) as PixelPresaleFactory;
+      await new LaunchDotFunPresaleFactory__factory(signers.deployer).deploy(
+        zwethAddress,
+        await tokenFactory.getAddress(),
+      )
+    ).waitForDeployment()) as LaunchDotFunPresaleFactory;
+
+    // Create token using TokenFactory
+    const createTokenTx = await tokenFactory.connect(signers.deployer).createToken(
+      "TestToken",
+      "TTK",
+      18,
+      config.tokenPresale, // totalSupply = tokenPresale (đơn giản)
+      "",
+    );
+    const createTokenReceipt = await createTokenTx.wait();
+
+    // Extract token address from event
+    type TokenCreatedEvent = {
+      name: string;
+      args: { tokenAddress: string };
+    };
+
+    const tokenCreatedEvent = createTokenReceipt?.logs
+      .map((log: unknown) => {
+        try {
+          return tokenFactory.interface.parseLog(log as Log) as unknown as TokenCreatedEvent;
+        } catch {
+          return null;
+        }
+      })
+      .find((e: TokenCreatedEvent | null): e is TokenCreatedEvent => e !== null && e.name === "TokenCreated");
+
+    if (!tokenCreatedEvent || !tokenCreatedEvent.args) {
+      throw new Error("Failed to extract token address from TokenCreated event");
+    }
+
+    tokenAddress = tokenCreatedEvent.args.tokenAddress as string;
+    token = IERC20__factory.connect(tokenAddress, signers.deployer) as IERC20;
+
+    // Approve factory to transfer tokens
+    await token.connect(signers.deployer).approve(await factory.getAddress(), config.tokenPresale);
 
     now = await time.latest();
 
@@ -206,16 +252,11 @@ describe("PixelPresale (bid-based) integration flow", function () {
       end: BigInt(now + PRESALE_DURATION),
     };
 
-    const tx = await factory.createPixelPresaleWithNewToken(
-      "TestToken",
-      "TTK",
-      config.tokenPresale, // totalSupply = tokenPresale (đơn giản)
-      presaleOptions,
-    );
+    const tx = await factory.connect(signers.deployer).createLaunchDotFunPresale(tokenAddress, presaleOptions);
 
     const receipt = await tx.wait();
 
-    type PixelPresaleCreatedEvent = {
+    type LaunchDotFunPresaleCreatedEvent = {
       name: string;
       args: { presale: string };
     };
@@ -223,29 +264,28 @@ describe("PixelPresale (bid-based) integration flow", function () {
     const event = receipt?.logs
       .map((log: unknown) => {
         try {
-          return factory.interface.parseLog(log as Log) as unknown as PixelPresaleCreatedEvent;
+          return factory.interface.parseLog(log as Log) as unknown as LaunchDotFunPresaleCreatedEvent;
         } catch {
           return null;
         }
       })
       .find(
-        (e: PixelPresaleCreatedEvent | null): e is PixelPresaleCreatedEvent =>
-          e !== null && e.name === "PixelPresaleCreated",
-      ) as PixelPresaleCreatedEvent | null;
+        (e: LaunchDotFunPresaleCreatedEvent | null): e is LaunchDotFunPresaleCreatedEvent =>
+          e !== null && e.name === "LaunchDotFunPresaleCreated",
+      ) as LaunchDotFunPresaleCreatedEvent | null;
 
     presaleAddress = event?.args?.presale ?? "";
     if (!presaleAddress) {
       throw new Error("Failed to extract presale address from deployment event");
     }
 
-    presale = PixelPresale__factory.connect(presaleAddress, signers.deployer) as PixelPresale;
+    presale = LaunchDotFunPresale__factory.connect(presaleAddress, signers.deployer) as LaunchDotFunPresale;
     const pool = await presale.pool();
 
-    ztoken = PixelTokenWrapper__factory.connect(pool.ztoken, signers.deployer) as PixelTokenWrapper;
-    token = IERC20__factory.connect(pool.token, signers.deployer) as IERC20;
+    ztoken = LaunchDotFunTokenWrapper__factory.connect(pool.ztoken, signers.deployer) as LaunchDotFunTokenWrapper;
 
     ztokenAddress = await ztoken.getAddress();
-    tokenAddress = await token.getAddress();
+    // tokenAddress is already set from token creation above
 
     console.table({
       token: tokenAddress,

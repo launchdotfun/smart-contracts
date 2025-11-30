@@ -9,9 +9,9 @@ import type { HardhatUserConfig } from "hardhat/config";
 import { vars } from "hardhat/config";
 import "solidity-coverage";
 
-import "./tasks/PixelPresale";
-import "./tasks/PixelTokenWrapper";
-import "./tasks/PixelWETH";
+import "./tasks/LaunchDotFunPresale";
+import "./tasks/LaunchDotFunTokenWrapper";
+import "./tasks/LaunchDotFunWETH";
 import "./tasks/accounts";
 
 const MNEMONIC: string = vars.get("MNEMONIC", "test test test test test test test test test test test junk");

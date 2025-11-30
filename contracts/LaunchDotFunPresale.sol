@@ -6,12 +6,12 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {Address} from "@openzeppelin/contracts/utils/Address.sol";
-import {PixelTokenWrapper} from "./PixelTokenWrapper.sol";
+import {LaunchDotFunTokenWrapper} from "./LaunchDotFunTokenWrapper.sol";
 import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 import {ZamaEthereumConfig} from "@fhevm/solidity/config/ZamaConfig.sol";
-import {PixelWETH} from "./PixelWETH.sol";
+import {LaunchDotFunWETH} from "./LaunchDotFunWETH.sol";
 
-interface IPixelPresale {
+interface ILaunchDotFunPresale {
     error InvalidState(uint8 currentState);
     error NotInPurchasePeriod();
     error NotRefundable();
@@ -26,7 +26,7 @@ interface IPixelPresale {
     );
 }
 
-contract PixelPresale is ZamaEthereumConfig, IPixelPresale, Ownable {
+contract LaunchDotFunPresale is ZamaEthereumConfig, ILaunchDotFunPresale, Ownable {
     using SafeERC20 for IERC20;
     using Address for address payable;
 
@@ -40,7 +40,7 @@ contract PixelPresale is ZamaEthereumConfig, IPixelPresale, Ownable {
 
     struct Pool {
         IERC20 token;
-        PixelTokenWrapper ztoken;
+        LaunchDotFunTokenWrapper ztoken;
         uint256 tokenBalance;
         uint256 tokensSold;
         uint256 weiRaised;
@@ -71,11 +71,11 @@ contract PixelPresale is ZamaEthereumConfig, IPixelPresale, Ownable {
         _prevalidatePool(_options);
 
         pool.token = IERC20(_token);
-        pool.ztoken = PixelTokenWrapper(_ztoken);
+        pool.ztoken = LaunchDotFunTokenWrapper(_ztoken);
         pool.zweth = _zweth;
         pool.options = _options;
 
-        uint256 rate = PixelTokenWrapper(_ztoken).rate();
+        uint256 rate = LaunchDotFunTokenWrapper(_ztoken).rate();
 
         pool.state = 1;
 
@@ -128,7 +128,7 @@ contract PixelPresale is ZamaEthereumConfig, IPixelPresale, Ownable {
 
         FHE.allowTransient(amount, address(pool.zweth));
         FHE.allowTransient(amount, address(this));
-        PixelWETH(pool.zweth).confidentialTransfer(beneficiary, amount);
+        LaunchDotFunWETH(pool.zweth).confidentialTransfer(beneficiary, amount);
     }
 
     function _prevalidatePool(PresaleOptions memory _options) internal pure returns (bool) {
@@ -176,7 +176,7 @@ contract PixelPresale is ZamaEthereumConfig, IPixelPresale, Ownable {
         euint64 newUserBid = FHE.add(userBid, bidAmount);
 
         FHE.allowTransient(bidAmount, zweth);
-        euint64 transferred = PixelWETH(zweth).confidentialTransferFrom(beneficiary, address(this), bidAmount);
+        euint64 transferred = LaunchDotFunWETH(zweth).confidentialTransferFrom(beneficiary, address(this), bidAmount);
 
         euint64 currentEthRaised = pool.ethRaisedEncrypted;
 
@@ -224,7 +224,7 @@ contract PixelPresale is ZamaEthereumConfig, IPixelPresale, Ownable {
 
             FHE.allowTransient(ethUsedEncrypted, address(pool.zweth));
             FHE.allowTransient(ethUsedEncrypted, address(this));
-            PixelWETH(pool.zweth).withdrawAndFinalize(address(this), owner(), ethUsedEncrypted, zwethRaised);
+            LaunchDotFunWETH(pool.zweth).withdrawAndFinalize(address(this), owner(), ethUsedEncrypted, zwethRaised);
         }
     }
 
@@ -251,8 +251,9 @@ contract PixelPresale is ZamaEthereumConfig, IPixelPresale, Ownable {
         FHE.allowTransient(refundAmount, address(this));
         // Refund phần dư zWETH
         FHE.allowTransient(refundAmount, pool.zweth);
-        PixelWETH(pool.zweth).confidentialTransfer(beneficiary, refundAmount);
+        LaunchDotFunWETH(pool.zweth).confidentialTransfer(beneficiary, refundAmount);
 
         settled[beneficiary] = true;
     }
 }
+
