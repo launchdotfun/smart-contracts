@@ -236,24 +236,19 @@ contract LaunchDotFunPresale is ZamaEthereumConfig, ILaunchDotFunPresale, Ownabl
         euint64 userBid = contributions[beneficiary];
         require(euint64.unwrap(userBid) != bytes32(0), "No bid");
 
-        // used = userBid * fillNumerator / fillDenominator
         euint64 used = FHE.div(FHE.mul(userBid, fillNumerator), fillDenominator);
 
         euint64 refundAmount = FHE.sub(userBid, used);
 
-        // allocatedTokens = used * tokenPerEthWithDecimals
         euint64 allocatedTokens = FHE.mul(used, pool.tokenPerEthWithDecimals);
 
-        // Lưu claimableTokens để user claim zToken
         claimableTokens[beneficiary] = allocatedTokens;
         FHE.allowThis(allocatedTokens);
         FHE.allow(allocatedTokens, beneficiary);
         FHE.allowTransient(refundAmount, address(this));
-        // Refund phần dư zWETH
         FHE.allowTransient(refundAmount, pool.zweth);
         LaunchDotFunWETH(pool.zweth).confidentialTransfer(beneficiary, refundAmount);
 
         settled[beneficiary] = true;
     }
 }
-

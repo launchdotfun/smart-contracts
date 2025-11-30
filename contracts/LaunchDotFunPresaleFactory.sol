@@ -35,7 +35,6 @@ contract LaunchDotFunPresaleFactory {
         address _token,
         LaunchDotFunPresale.PresaleOptions memory _options
     ) external returns (address presale) {
-        // Create confidential token wrapper for existing token
         LaunchDotFunTokenWrapper ztoken = new LaunchDotFunTokenWrapper(
             string(abi.encodePacked("Confidential ", IERC20Metadata(_token).name())),
             string(abi.encodePacked("c", IERC20Metadata(_token).symbol())),
@@ -43,17 +42,13 @@ contract LaunchDotFunPresaleFactory {
             IERC20(_token)
         );
 
-        // Deploy new LaunchDotFunPresale contract
         LaunchDotFunPresale newPresale = new LaunchDotFunPresale(msg.sender, zweth, _token, address(ztoken), _options);
 
-        // Transfer token to presale contract
         IERC20(_token).safeTransferFrom(msg.sender, address(newPresale), _options.tokenPresale);
 
-        // Store the address
         allPresales.push(address(newPresale));
         presalesByCreator[msg.sender].push(address(newPresale));
 
-        // Emit event
         emit LaunchDotFunPresaleCreated(msg.sender, address(newPresale), _token, address(ztoken), zweth);
 
         return address(newPresale);

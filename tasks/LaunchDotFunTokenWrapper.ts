@@ -20,10 +20,6 @@ async function readTokenDecimals(
   }
 }
 
-/**
- * Wrap underlying ERC20 tokens into confidential tokens
- * Example: npx hardhat --network sepolia task:ztoken-wrap --amount 100 --user 1 --ztoken 0x... --to 0x...
- */
 task("task:ztoken-wrap", "Wrap underlying ERC20 tokens into confidential tokens")
   .addParam("amount", "Amount of underlying tokens to wrap")
   .addParam("user", "User index (0, 1, 2, etc.)")
@@ -63,12 +59,8 @@ task("task:ztoken-wrap", "Wrap underlying ERC20 tokens into confidential tokens"
     console.log("Wrapper decimals:", decimalsNumber);
 
     const expectedConfidential = amount / rate;
-    console.log(
-      "Expected confidential tokens:",
-      formatAmount(expectedConfidential, decimalsNumber, hre),
-    );
+    console.log("Expected confidential tokens:", formatAmount(expectedConfidential, decimalsNumber, hre));
 
-    // Check if user has enough underlying tokens
     const underlyingBalance = await underlying.balanceOf(user.address);
     if (underlyingBalance < amount) {
       throw new Error(
@@ -76,7 +68,6 @@ task("task:ztoken-wrap", "Wrap underlying ERC20 tokens into confidential tokens"
       );
     }
 
-    // Check allowance
     const allowance = await underlying.allowance(user.address, taskArguments.ztoken);
     if (allowance < amount) {
       console.log("Approving underlying tokens for wrapper contract...");
@@ -85,7 +76,6 @@ task("task:ztoken-wrap", "Wrap underlying ERC20 tokens into confidential tokens"
       console.log("✅ Approval completed");
     }
 
-    // Wrap tokens
     console.log("Executing wrap...");
     const tx = await ztoken.connect(user).wrap(to, amount);
     await tx.wait();
@@ -115,10 +105,6 @@ task("task:ztoken-wrap", "Wrap underlying ERC20 tokens into confidential tokens"
     };
   });
 
-/**
- * Unwrap confidential tokens back to underlying ERC20 tokens
- * Example: npx hardhat --network sepolia task:ztoken-unwrap --amount 10 --user 1 --ztoken 0x... --to 0x...
- */
 task("task:ztoken-unwrap", "Unwrap confidential tokens back to underlying ERC20 tokens")
   .addParam("amount", "Amount of confidential tokens to unwrap")
   .addParam("user", "User index (0, 1, 2, etc.)")
@@ -129,7 +115,6 @@ task("task:ztoken-unwrap", "Unwrap confidential tokens back to underlying ERC20 
 
     console.log("Unwrapping confidential tokens to underlying tokens...");
 
-    // Initialize FHEVM
     await fhevm.initializeCLIApi();
 
     const user = await getSigner(hre, parseInt(taskArguments.user));
@@ -157,14 +142,8 @@ task("task:ztoken-unwrap", "Unwrap confidential tokens back to underlying ERC20 
     console.log("Rate:", rate.toString());
     console.log("Expected underlying tokens:", formatAmount(amount * rate, underlyingDecimals, hre));
 
-    // Check if user has enough confidential tokens
     const balance = await ztoken.confidentialBalanceOf(user.address);
-    const clearBalance = await fhevm.userDecryptEuint(
-      FhevmType.euint64,
-      balance.toString(),
-      ztokenAddress,
-      user,
-    );
+    const clearBalance = await fhevm.userDecryptEuint(FhevmType.euint64, balance.toString(), ztokenAddress, user);
 
     if (clearBalance < amount) {
       throw new Error(
@@ -172,21 +151,17 @@ task("task:ztoken-unwrap", "Unwrap confidential tokens back to underlying ERC20 
       );
     }
 
-    // Get underlying token balance before unwrap
     const underlyingBalanceBefore = await underlying.balanceOf(to);
 
-    // Create encrypted unwrap input
     console.log("Creating encrypted unwrap input...");
     const encrypted = await fhevm.createEncryptedInput(ztokenAddress, user.address).add64(amount).encrypt();
 
-    // Unwrap tokens
     console.log("Executing unwrap...");
     const tx = await ztoken
       .connect(user)
       ["unwrap(address,address,bytes32,bytes)"](user.address, to, encrypted.handles[0], encrypted.inputProof);
     await tx.wait();
 
-    // Get underlying token balance after unwrap
     const underlyingBalanceAfter = await underlying.balanceOf(to);
     const receivedUnderlying = underlyingBalanceAfter - underlyingBalanceBefore;
 
@@ -203,10 +178,6 @@ task("task:ztoken-unwrap", "Unwrap confidential tokens back to underlying ERC20 
     };
   });
 
-/**
- * Get confidential token balance
- * Example: npx hardhat --network sepolia task:ztoken-balance --user 1 --ztoken 0x...
- */
 task("task:ztoken-balance", "Get confidential token balance")
   .addParam("user", "User index (0, 1, 2, etc.)")
   .addParam("ztoken", "LaunchDotFunTokenWrapper contract address")
@@ -215,24 +186,16 @@ task("task:ztoken-balance", "Get confidential token balance")
 
     console.log("Getting confidential token balance...");
 
-    // Initialize FHEVM
     await fhevm.initializeCLIApi();
 
     const user = await getSigner(hre, parseInt(taskArguments.user));
     const ztoken = await hre.ethers.getContractAt("LaunchDotFunTokenWrapper", taskArguments.ztoken);
     const ztokenAddress = await ztoken.getAddress();
 
-    // Get balance
     console.log("Getting confidential token balance of user...");
     const balance = await ztoken.confidentialBalanceOf(user.address);
-    const clearBalance = await fhevm.userDecryptEuint(
-      FhevmType.euint64,
-      balance.toString(),
-      ztokenAddress,
-      user,
-    );
+    const clearBalance = await fhevm.userDecryptEuint(FhevmType.euint64, balance.toString(), ztokenAddress, user);
 
-    // Get contract info for display
     const [name, symbol, decimals, rateRaw, underlyingAddress] = await Promise.all([
       ztoken.name(),
       ztoken.symbol(),
@@ -262,10 +225,6 @@ task("task:ztoken-balance", "Get confidential token balance")
     };
   });
 
-/**
- * Transfer confidential tokens between addresses
- * Example: npx hardhat --network sepolia task:ztoken-transfer --amount 5 --from 1 --to 0x... --ztoken 0x...
- */
 task("task:ztoken-transfer", "Transfer confidential tokens between addresses")
   .addParam("amount", "Amount of confidential tokens to transfer")
   .addParam("from", "Sender user index (0, 1, 2, etc.)")
@@ -276,7 +235,6 @@ task("task:ztoken-transfer", "Transfer confidential tokens between addresses")
 
     console.log("Transferring confidential tokens...");
 
-    // Initialize FHEVM
     await fhevm.initializeCLIApi();
 
     const fromUser = await getSigner(hre, parseInt(taskArguments.from));
@@ -285,7 +243,6 @@ task("task:ztoken-transfer", "Transfer confidential tokens between addresses")
     const ztoken = await hre.ethers.getContractAt("LaunchDotFunTokenWrapper", taskArguments.ztoken);
     const ztokenAddress = await ztoken.getAddress();
 
-    // Get contract info
     const [symbol, decimals] = await Promise.all([ztoken.symbol(), ztoken.decimals()]);
     const decimalsNumber = Number(decimals);
     const amount = parseAmount(taskArguments.amount, decimalsNumber, hre);
@@ -294,12 +251,7 @@ task("task:ztoken-transfer", "Transfer confidential tokens between addresses")
     }
 
     const balance = await ztoken.confidentialBalanceOf(fromUser.address);
-    const clearBalance = await fhevm.userDecryptEuint(
-      FhevmType.euint64,
-      balance.toString(),
-      ztokenAddress,
-      fromUser,
-    );
+    const clearBalance = await fhevm.userDecryptEuint(FhevmType.euint64, balance.toString(), ztokenAddress, fromUser);
     if (clearBalance < amount) {
       throw new Error(
         `Insufficient balance. Have: ${formatAmount(clearBalance, decimalsNumber, hre)}, Need: ${formatAmount(amount, decimalsNumber, hre)}`,
@@ -310,18 +262,15 @@ task("task:ztoken-transfer", "Transfer confidential tokens between addresses")
     console.log("From:", fromUser.address);
     console.log("To:", toAddress);
 
-    // Create encrypted transfer input
     console.log("Creating encrypted transfer input...");
     const encrypted = await fhevm.createEncryptedInput(ztokenAddress, fromUser.address).add64(amount).encrypt();
 
-    // Transfer tokens
     console.log("Executing transfer...");
     const tx = await ztoken
       .connect(fromUser)
       ["confidentialTransfer(address,bytes32,bytes)"](toAddress, encrypted.handles[0], encrypted.inputProof);
     await tx.wait();
 
-    // Get balances after transfer
     const fromBalanceAfter = await ztoken.confidentialBalanceOf(fromUser.address);
 
     const fromClearBalanceAfter = await fhevm.userDecryptEuint(

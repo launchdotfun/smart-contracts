@@ -20,21 +20,17 @@ import {
   LaunchDotFunWETH__factory,
 } from "../types";
 
-// ====== Constants ======
+const TIME_INCREASE = 7200;
+const PRESALE_DURATION = 3600;
+const PRESALE_START_OFFSET = 60;
+const OPERATOR_EXPIRY_OFFSET = 1000;
 
-const TIME_INCREASE = 7200; // 2 hours
-const PRESALE_DURATION = 3600; // 1 hour
-const PRESALE_START_OFFSET = 60; // 1 minute ago
-const OPERATOR_EXPIRY_OFFSET = 1000; // 1000 seconds from now
-
-// Bid amounts (in zWETH units, 9 decimals)
 const BID_AMOUNTS = {
   alice: ethers.parseUnits("4", 9), // 4
   bob: ethers.parseUnits("4", 9), // 4
-  charlie: ethers.parseUnits("2", 9), // 2
+  charlie: ethers.parseUnits("2", 9),
 } as const;
 
-// Presale base config
 const PRESALE_CONFIG = {
   hardCap: ethers.parseUnits("10", 9), // 10
   softCap: ethers.parseUnits("6", 9), // 6
@@ -47,8 +43,6 @@ type Signers = {
   bob: HardhatEthersSigner;
   charlie: HardhatEthersSigner;
 };
-
-// ====== Test helpers ======
 
 class TestHelpers {
   static async wrapETH(user: HardhatEthersSigner, amount: bigint, zweth: LaunchDotFunWETH) {
@@ -80,7 +74,6 @@ class TestHelpers {
   }
 
   static async createEncryptedBid(presaleAddress: string, user: HardhatEthersSigner, amount: bigint) {
-    // Hardhat fhevm plugin: createEncryptedInput(contract, user).add64(amount)
     return await fhevm.createEncryptedInput(presaleAddress, user.address).add64(amount).encrypt();
   }
 
@@ -118,11 +111,7 @@ class TestHelpers {
     return clearBalance;
   }
 
-  static async finalizePresale(
-    presale: LaunchDotFunPresale,
-    caller: HardhatEthersSigner,
-    totalBid: bigint, // truyền từ test vào
-  ) {
+  static async finalizePresale(presale: LaunchDotFunPresale, caller: HardhatEthersSigner, totalBid: bigint) {
     await network.provider.send("evm_increaseTime", [TIME_INCREASE]);
 
     const pool = await presale.pool();
@@ -130,14 +119,11 @@ class TestHelpers {
     const hardCapBig = BigInt(pool.options.hardCap.toString());
     const tokenPerEthBig = BigInt(pool.tokenPerEthWithDecimals.toString());
 
-    // ethRaisedUsed: số zWETH thực sự được dùng
     const ethRaisedUsed = totalBid <= hardCapBig ? totalBid : hardCapBig;
 
-    // fill ratio pro-rata
     const fillNumerator = ethRaisedUsed;
     const fillDenominator = totalBid;
 
-    // tokensSold (zToken units)
     const tokensSold = ethRaisedUsed * tokenPerEthBig;
 
     await presale.connect(caller).finalizePreSale(ethRaisedUsed, tokensSold, fillNumerator, fillDenominator);
@@ -166,8 +152,6 @@ class TestHelpers {
   }
 }
 
-// ====== Test suite ======
-
 describe("LaunchDotFunPresale (bid-based) integration flow", function () {
   let signers: Signers;
   let zweth: LaunchDotFunWETH;
@@ -187,18 +171,15 @@ describe("LaunchDotFunPresale (bid-based) integration flow", function () {
       throw new Error("This hardhat test suite cannot run on Sepolia Testnet");
     }
 
-    // Deploy zWETH
     zweth = (await (
       await new LaunchDotFunWETH__factory(signers.deployer).deploy()
     ).waitForDeployment()) as LaunchDotFunWETH;
     zwethAddress = await zweth.getAddress();
 
-    // Deploy LaunchDotFunTokenFactory
     const tokenFactory = (await (
       await new LaunchDotFunTokenFactory__factory(signers.deployer).deploy()
     ).waitForDeployment()) as LaunchDotFunTokenFactory;
 
-    // Deploy LaunchDotFunPresaleFactory
     factory = (await (
       await new LaunchDotFunPresaleFactory__factory(signers.deployer).deploy(
         zwethAddress,
@@ -206,17 +187,11 @@ describe("LaunchDotFunPresale (bid-based) integration flow", function () {
       )
     ).waitForDeployment()) as LaunchDotFunPresaleFactory;
 
-    // Create token using TokenFactory
-    const createTokenTx = await tokenFactory.connect(signers.deployer).createToken(
-      "TestToken",
-      "TTK",
-      18,
-      config.tokenPresale, // totalSupply = tokenPresale (đơn giản)
-      "",
-    );
+    const createTokenTx = await tokenFactory
+      .connect(signers.deployer)
+      .createToken("TestToken", "TTK", 18, config.tokenPresale, "");
     const createTokenReceipt = await createTokenTx.wait();
 
-    // Extract token address from event
     type TokenCreatedEvent = {
       name: string;
       args: { tokenAddress: string };
@@ -239,7 +214,6 @@ describe("LaunchDotFunPresale (bid-based) integration flow", function () {
     tokenAddress = tokenCreatedEvent.args.tokenAddress as string;
     token = IERC20__factory.connect(tokenAddress, signers.deployer) as IERC20;
 
-    // Approve factory to transfer tokens
     await token.connect(signers.deployer).approve(await factory.getAddress(), config.tokenPresale);
 
     now = await time.latest();
@@ -285,7 +259,6 @@ describe("LaunchDotFunPresale (bid-based) integration flow", function () {
     ztoken = LaunchDotFunTokenWrapper__factory.connect(pool.ztoken, signers.deployer) as LaunchDotFunTokenWrapper;
 
     ztokenAddress = await ztoken.getAddress();
-    // tokenAddress is already set from token creation above
 
     console.table({
       token: tokenAddress,
@@ -311,8 +284,6 @@ describe("LaunchDotFunPresale (bid-based) integration flow", function () {
       charlie: signers.charlie.address,
     });
   });
-
-  // ===== Happy case: oversubscription / full hard cap, success, pro-rata allocation =====
 
   describe("Happy path: bids reach/exceed hard cap → presale success", function () {
     before(async function () {
@@ -361,7 +332,6 @@ describe("LaunchDotFunPresale (bid-based) integration flow", function () {
     });
 
     it("finalize presale using decrypted totals and fill ratio", async function () {
-      // Sum of all bids: Alice (4) + Bob (4) + Charlie (2) = 10
       const totalBid = BID_AMOUNTS.alice + BID_AMOUNTS.bob + BID_AMOUNTS.charlie;
 
       const { ethRaisedUsed, tokensSold, tokenPerEthBig } = await TestHelpers.finalizePresale(
@@ -376,7 +346,6 @@ describe("LaunchDotFunPresale (bid-based) integration flow", function () {
       const expectedWeiRaised = ethRaisedUsed * 10n ** 9n;
       const expectedTokensSoldUnderlying = tokensSold * rate;
 
-      // With totalBid = 10, ethRaisedUsed = 10, softCap = 6 ⇒ state 4 (success)
       const expectedState = ethRaisedUsed >= BigInt(pool.options.softCap.toString()) ? 4 : 3;
 
       await TestHelpers.validateFinalization(presale, expectedState, expectedWeiRaised, expectedTokensSoldUnderlying);
@@ -413,7 +382,6 @@ describe("LaunchDotFunPresale (bid-based) integration flow", function () {
     it("non-owner cannot finalize presale", async function () {
       const totalBid = BID_AMOUNTS.alice + BID_AMOUNTS.bob + BID_AMOUNTS.charlie;
 
-      // move time so presale is endable
       await network.provider.send("evm_increaseTime", [TIME_INCREASE]);
 
       const pool = await presale.pool();
@@ -423,7 +391,6 @@ describe("LaunchDotFunPresale (bid-based) integration flow", function () {
       const ethRaisedUsed = totalBid <= hardCapBig ? totalBid : hardCapBig;
       const tokensSold = ethRaisedUsed * tokenPerEthBig;
 
-      // Alice (non-owner) tries to finalize
       await expect(
         presale.connect(signers.alice).finalizePreSale(ethRaisedUsed, tokensSold, ethRaisedUsed, totalBid),
       ).to.be.revertedWithCustomError(presale, "OwnableUnauthorizedAccount");
@@ -486,7 +453,6 @@ describe("LaunchDotFunPresale (bid-based) integration flow", function () {
       const pool = await presale.pool();
       const end = Number(pool.options.end);
 
-      // jump to just after end
       await time.increaseTo(end + 1);
 
       const encrypted = await TestHelpers.createEncryptedBid(presaleAddress, signers.alice, OVERSUB_BIDS.alice);
@@ -532,7 +498,6 @@ describe("LaunchDotFunPresale (bid-based) integration flow", function () {
         signers.alice,
       );
 
-      // partial refund: > 0 nhưng < bid ban đầu
       expect(postBalance).to.be.gt(0n);
       expect(postBalance).to.be.lt(OVERSUB_BIDS.alice);
 
@@ -546,7 +511,6 @@ describe("LaunchDotFunPresale (bid-based) integration flow", function () {
 
       expect(clearClaimable).to.be.gt(0n);
 
-      // Alice claim zToken sau khi settle
       await presale.connect(signers.alice).claimTokens(signers.alice.address);
 
       const zBal = await ztoken.confidentialBalanceOf(signers.alice.address);
@@ -560,8 +524,6 @@ describe("LaunchDotFunPresale (bid-based) integration flow", function () {
       expect(clearZBal).to.be.gt(0n);
     });
   });
-
-  // ===== Sad case: only Alice bids below softCap → presale fails, full refund =====
 
   describe("Sad path: only Alice bids below softCap → presale cancelled", function () {
     before(async function () {
@@ -600,13 +562,7 @@ describe("LaunchDotFunPresale (bid-based) integration flow", function () {
 
       const pool = await presale.pool();
 
-      // do Alice bid < softCap → state phải là 3 (thất bại)
-      await TestHelpers.validateFinalization(
-        presale,
-        3,
-        ethRaisedUsed * 10n ** 9n,
-        pool.tokensSold, // ở đây chỉ check state + weiRaised là chính
-      );
+      await TestHelpers.validateFinalization(presale, 3, ethRaisedUsed * 10n ** 9n, pool.tokensSold);
     });
 
     it("Alice cannot claim tokens in cancelled pool", async function () {
@@ -618,7 +574,6 @@ describe("LaunchDotFunPresale (bid-based) integration flow", function () {
     it("Alice can refund and get back full zWETH", async function () {
       await presale.connect(signers.alice).refund();
 
-      // Kiểm tra lại balance zWETH sau refund
       const balance = await zweth.confidentialBalanceOf(signers.alice.address);
       const clear = await fhevm.userDecryptEuint(
         FhevmType.euint64,

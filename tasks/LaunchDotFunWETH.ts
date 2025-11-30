@@ -4,10 +4,6 @@ import type { TaskArguments } from "hardhat/types";
 
 import { formatAmount, getSigner, parseAmount } from "./helpers";
 
-/**
- * Deposit ETH to LaunchDotFunWETH
- * Example: npx hardhat --network sepolia task:zweth-deposit --amount 5 --user 1 --zweth 0x...
- */
 task("task:zweth-deposit", "Deposit ETH to LaunchDotFunWETH")
   .addParam("amount", "Amount of ETH to deposit")
   .addParam("user", "User index (0, 1, 2, etc.)")
@@ -18,7 +14,6 @@ task("task:zweth-deposit", "Deposit ETH to LaunchDotFunWETH")
 
     console.log("Depositing ETH to LaunchDotFunWETH...");
 
-    // Initialize FHEVM
     await fhevm.initializeCLIApi();
 
     const user = await getSigner(hre, parseInt(taskArguments.user));
@@ -39,11 +34,9 @@ task("task:zweth-deposit", "Deposit ETH to LaunchDotFunWETH")
     console.log("From:", user.address);
     console.log("To:", to);
 
-    // Deposit ETH to zWETH
     const tx = await zweth.connect(user).deposit(to, { value: amountWei });
     await tx.wait();
 
-    // Get balance after deposit
     let clearBalanceAfter: bigint | null = null;
     const balanceAfter = await zweth.confidentialBalanceOf(to);
     if (to.toLowerCase() === user.address.toLowerCase()) {
@@ -74,10 +67,6 @@ task("task:zweth-deposit", "Deposit ETH to LaunchDotFunWETH")
     };
   });
 
-/**
- * Withdraw ETH from LaunchDotFunWETH
- * Example: npx hardhat --network sepolia task:zweth-withdraw --amount 2 --user 1 --zweth 0x... --to 0x...
- */
 task("task:zweth-withdraw", "Withdraw ETH from LaunchDotFunWETH")
   .addParam("amount", "Amount of zWETH to withdraw")
   .addParam("user", "User index (0, 1, 2, etc.)")
@@ -88,7 +77,6 @@ task("task:zweth-withdraw", "Withdraw ETH from LaunchDotFunWETH")
 
     console.log("Withdrawing ETH from LaunchDotFunWETH...");
 
-    // Initialize FHEVM
     await fhevm.initializeCLIApi();
 
     const user = await getSigner(hre, parseInt(taskArguments.user));
@@ -106,7 +94,6 @@ task("task:zweth-withdraw", "Withdraw ETH from LaunchDotFunWETH")
     console.log("From:", user.address);
     console.log("To:", to);
 
-    // Check if user has enough zWETH
     const balance = await zweth.confidentialBalanceOf(user.address);
     const clearBalance = await fhevm.userDecryptEuint(FhevmType.euint64, balance.toString(), zwethAddress, user);
 
@@ -116,20 +103,16 @@ task("task:zweth-withdraw", "Withdraw ETH from LaunchDotFunWETH")
       );
     }
 
-    // Get ETH balance before withdrawal
     const ethBalanceBefore = await hre.ethers.provider.getBalance(to);
 
-    // Create encrypted withdrawal input
     console.log("Creating encrypted withdrawal input...");
     const encrypted = await fhevm.createEncryptedInput(zwethAddress, user.address).add64(amountZweth).encrypt();
 
-    // Convert amount to uint64 for finalizeWithdraw
     if (amountZweth > (1n << 64n) - 1n) {
       throw new Error("Amount exceeds uint64 range required by withdraw");
     }
     const amountUint64 = Number(amountZweth);
 
-    // Withdraw ETH and finalize in one transaction
     console.log("Executing withdrawal...");
     const tx = await zweth
       .connect(user)
@@ -138,7 +121,6 @@ task("task:zweth-withdraw", "Withdraw ETH from LaunchDotFunWETH")
       ](user.address, to, encrypted.handles[0], encrypted.inputProof, amountUint64);
     await tx.wait();
 
-    // Get ETH balance after withdrawal
     const ethBalanceAfter = await hre.ethers.provider.getBalance(to);
     const ethReceived = ethBalanceAfter - ethBalanceBefore;
 
@@ -154,10 +136,6 @@ task("task:zweth-withdraw", "Withdraw ETH from LaunchDotFunWETH")
     };
   });
 
-/**
- * Get LaunchDotFunWETH balance
- * Example: npx hardhat --network sepolia task:zweth-balance --user 1 --zweth 0x...
- */
 task("task:zweth-balance", "Get LaunchDotFunWETH balance")
   .addParam("user", "User index (0, 1, 2, etc.)")
   .addParam("zweth", "LaunchDotFunWETH contract address")
@@ -166,7 +144,6 @@ task("task:zweth-balance", "Get LaunchDotFunWETH balance")
 
     console.log("Getting LaunchDotFunWETH balance...");
 
-    // Initialize FHEVM
     await fhevm.initializeCLIApi();
 
     console.log("Initializing FHEVM successfully");
@@ -175,7 +152,6 @@ task("task:zweth-balance", "Get LaunchDotFunWETH balance")
     const zweth = await hre.ethers.getContractAt("LaunchDotFunWETH", taskArguments.zweth);
     const zwethAddress = await zweth.getAddress();
 
-    // Get balance
     console.log("Getting LaunchDotFunWETH balance of user...");
     const balance = await zweth.confidentialBalanceOf(user.address);
     const clearBalance = await fhevm.userDecryptEuint(FhevmType.euint64, balance.toString(), zwethAddress, user);
@@ -191,10 +167,6 @@ task("task:zweth-balance", "Get LaunchDotFunWETH balance")
     };
   });
 
-/**
- * Get LaunchDotFunWETH contract information
- * Example: npx hardhat --network sepolia task:zweth-info --zweth 0x...
- */
 task("task:zweth-info", "Get LaunchDotFunWETH contract information")
   .addParam("zweth", "LaunchDotFunWETH contract address")
   .setAction(async function (taskArguments: TaskArguments, hre) {
@@ -202,7 +174,6 @@ task("task:zweth-info", "Get LaunchDotFunWETH contract information")
 
     const zweth = await hre.ethers.getContractAt("LaunchDotFunWETH", taskArguments.zweth);
 
-    // Get contract info
     const [name, symbol, decimals, rateRaw] = await Promise.all([
       zweth.name(),
       zweth.symbol(),
